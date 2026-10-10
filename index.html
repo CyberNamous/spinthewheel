@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#0f0f11">
+  <title>Wheel Spin Entry Portal</title>
+  <style>
+    :root {
+      --bg: #0f0f11;
+      --panel: #16161a;
+      --panel-2: #1d1d23;
+      --line: #2a2a33;
+      --pink: #ff69b4;
+      --pink-2: #ff479d;
+      --magenta: #ff007f;
+      --white: #ffffff;
+      --silver: #a0a0aa;
+      --ok: #3ddc97;
+      --bad: #ff4d6d;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 15% 0%, rgba(255, 0, 127, 0.18), transparent 45%),
+        radial-gradient(circle at 100% 100%, rgba(255, 105, 180, 0.12), transparent 40%),
+        var(--bg);
+      color: var(--white);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.5;
+      padding: clamp(14px, 4vw, 40px);
+      padding-bottom: calc(clamp(14px, 4vw, 40px) + env(safe-area-inset-bottom));
+    }
+    .shell { width: 100%; max-width: 520px; margin: 0 auto; }
+    .hero { text-align: center; margin-bottom: 22px; }
+    .badge {
+      display: inline-block;
+      padding: 5px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--magenta);
+      color: var(--pink);
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      box-shadow: 0 0 18px rgba(255, 0, 127, 0.35);
+    }
+    h1 {
+      margin-top: 14px;
+      font-size: clamp(1.9rem, 7vw, 2.6rem);
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      background: linear-gradient(90deg, var(--pink), var(--magenta));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .hero p { margin-top: 10px; color: var(--silver); font-size: 0.98rem; }
+    .card {
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: clamp(18px, 5vw, 28px);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 71, 157, 0.08);
+    }
+    .field { margin-bottom: 18px; }
+    .field-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 7px; }
+    label { font-weight: 700; font-size: 0.95rem; }
+    .link-btn {
+      background: none;
+      border: none;
+      color: var(--pink);
+      font: inherit;
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 4px 0;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .link-btn:hover { color: var(--white); }
+    input[type="text"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1.5px solid var(--line);
+      border-radius: 14px;
+      padding: 14px 16px;
+      color: var(--white);
+      font: inherit;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    input[type="text"]::placeholder { color: #5d5d68; }
+    input[type="text"]:focus { border-color: var(--pink-2); box-shadow: 0 0 0 4px rgba(255, 71, 157, 0.18); }
+    input.invalid { border-color: var(--bad); box-shadow: 0 0 0 4px rgba(255, 77, 109, 0.15); }
+    .field-error { display: none; margin-top: 6px; color: var(--bad); font-size: 0.85rem; font-weight: 600; }
+    .field-error.show { display: block; }
+    .guide {
+      max-height: 0;
+      overflow: hidden;
+      opacity: 0;
+      transition: max-height 0.35s ease, opacity 0.25s ease, margin 0.25s ease;
+    }
+    .guide.open { max-height: 640px; opacity: 1; margin-top: 10px; }
+    .guide-inner {
+      background: var(--bg);
+      border: 1px dashed var(--magenta);
+      border-radius: 14px;
+      padding: 12px;
+    }
+    .guide-inner p { color: var(--silver); font-size: 0.85rem; margin-bottom: 10px; }
+    .guide-inner img { display: block; width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); }
+    .upload {
+      display: block;
+      text-align: center;
+      border: 2px dashed var(--line);
+      border-radius: 16px;
+      padding: 22px 14px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .upload:hover, .upload.has-file { border-color: var(--pink-2); background: rgba(255, 71, 157, 0.06); }
+    .upload strong { display: block; color: var(--pink); font-size: 1rem; }
+    .upload span { color: var(--silver); font-size: 0.85rem; }
+    .upload input { display: none; }
+    .submit {
+      width: 100%;
+      margin-top: 6px;
+      border: none;
+      border-radius: 16px;
+      padding: 16px;
+      font: inherit;
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      color: var(--white);
+      background: linear-gradient(90deg, var(--magenta), var(--pink-2));
+      box-shadow: 0 10px 30px rgba(255, 0, 127, 0.4);
+      cursor: pointer;
+      transition: transform 0.1s, filter 0.15s;
+    }
+    .submit:hover { filter: brightness(1.1); }
+    .submit:active { transform: scale(0.985); }
+    .submit:disabled { filter: grayscale(0.8) brightness(0.6); cursor: not-allowed; box-shadow: none; }
+    .notice {
+      display: none;
+      margin-top: 16px;
+      padding: 13px 15px;
+      border-radius: 14px;
+      font-size: 0.93rem;
+      font-weight: 600;
+    }
+    .notice.show { display: block; }
+    .notice.error { background: rgba(255, 77, 109, 0.12); border: 1px solid var(--bad); color: #ffc2cc; }
+    .notice.success { background: rgba(61, 220, 151, 0.12); border: 1px solid var(--ok); color: #b8f5d9; }
+    .notice.info { background: rgba(255, 105, 180, 0.1); border: 1px solid var(--pink); color: var(--white); }
+    .privacy { margin-top: 18px; text-align: center; color: var(--silver); font-size: 0.78rem; }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(8, 8, 10, 0.86);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    .overlay.show { display: flex; }
+    .modal {
+      width: 100%;
+      max-width: 440px;
+      max-height: 88vh;
+      overflow-y: auto;
+      background: var(--panel);
+      border: 1px solid var(--magenta);
+      border-radius: 22px;
+      padding: 24px;
+      box-shadow: 0 0 40px rgba(255, 0, 127, 0.3);
+    }
+    .modal h2 { color: var(--pink); font-size: 1.25rem; margin-bottom: 12px; }
+    .modal ol { padding-left: 20px; color: var(--silver); font-size: 0.93rem; }
+    .modal li { margin-bottom: 9px; }
+    .modal li b { color: var(--white); }
+    .modal .submit { margin-top: 16px; padding: 13px; }
+    .loader { text-align: center; }
+    .spinner {
+      width: 58px;
+      height: 58px;
+      margin: 0 auto 18px;
+      border-radius: 50%;
+      border: 5px solid var(--line);
+      border-top-color: var(--magenta);
+      border-right-color: var(--pink);
+      animation: spin 0.9s linear infinite;
+    }
+    .ticker { font-size: 1.05rem; font-weight: 700; min-height: 3em; }
+    .loader small { display: block; margin-top: 10px; color: var(--silver); }
+    .bar { height: 7px; margin-top: 16px; border-radius: 999px; background: var(--line); overflow: hidden; }
+    .bar i { display: block; width: 0%; height: 100%; background: linear-gradient(90deg, var(--magenta), var(--pink)); transition: width 0.3s ease; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.5s; } .guide { transition: none; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <span class="badge">Live Wheel Spin</span>
+      <h1>Enter the Wheel</h1>
+      <p>Submit your usernames and a screenshot of your fan club page. Your screenshot is read on your own device and is never uploaded.</p>
+    </header>
+
+    <form id="entryForm" class="card" novalidate autocomplete="off">
+      <div class="field">
+        <div class="field-head">
+          <label for="robloxInput">Roblox Username</label>
+          <button type="button" class="link-btn" data-guide="guideRoblox">❓ What is this?</button>
+        </div>
+        <input id="robloxInput" type="text" inputmode="text" maxlength="40" placeholder="Your Roblox username" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <div class="field-error" id="robloxError"></div>
+        <div class="guide" id="guideRoblox">
+          <div class="guide-inner">
+            <p>Use your Roblox <b>username</b>, not your display name. Display names can be changed and are not unique.</p>
+            <img src="images/filler1.png" alt="Roblox username versus display name example" loading="lazy">
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <label for="tiktokInput">TikTok Username</label>
+          <button type="button" class="link-btn" data-guide="guideTiktok">❓ What is this?</button>
+        </div>
+        <input id="tiktokInput" type="text" inputmode="text" maxlength="40" placeholder="Your TikTok username (no @)" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <div class="field-error" id="tiktokError"></div>
+        <div class="guide" id="guideTiktok">
+          <div class="guide-inner">
+            <p>This is the handle that starts with @ on your TikTok profile. Type it without the @ symbol.</p>
+            <img src="images/filler2.png" alt="Where to find your TikTok handle" loading="lazy">
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <label for="shotInput">Fan Club Screenshot</label>
+          <button type="button" class="link-btn" id="howToBtn">❓ How to get screenshot?</button>
+        </div>
+        <label class="upload" id="uploadBox" for="shotInput">
+          <strong id="uploadTitle">Tap to choose a screenshot</strong>
+          <span id="uploadHint">PNG, JPG or WEBP, up to 15 MB</span>
+          <input id="shotInput" type="file" accept="image/png,image/jpeg,image/webp">
+        </label>
+        <div class="field-error" id="shotError"></div>
+      </div>
+
+      <button type="submit" class="submit" id="submitBtn">ENTER THE WHEEL</button>
+      <div class="notice" id="notice" role="status" aria-live="polite"></div>
+      <p class="privacy">Only the text read from your screenshot is sent. The image never leaves your device.</p>
+    </form>
+  </main>
+
+  <div class="overlay" id="howToOverlay" role="dialog" aria-modal="true" aria-labelledby="howToTitle">
+    <div class="modal">
+      <h2 id="howToTitle">How to get your screenshot</h2>
+      <ol>
+        <li>Open <b>TikTok</b> and go to the streamer's <b>Fan Club</b> page.</li>
+        <li>Open your <b>Fan Journey</b> screen so your fan club badge and <b>Level</b> are visible.</li>
+        <li>Make sure your <b>TikTok username</b> and the <b>fan club name</b> can be read clearly.</li>
+        <li>Take a screenshot with your phone's normal screenshot buttons. Do not crop out the badge or edit it.</li>
+        <li>Come back here and tap <b>Tap to choose a screenshot</b>.</li>
+      </ol>
+      <button type="button" class="submit" id="howToClose">GOT IT</button>
+    </div>
+  </div>
+
+  <div class="overlay" id="loadingOverlay" role="alertdialog" aria-modal="true" aria-live="polite" aria-label="Checking your screenshot">
+    <div class="modal loader">
+      <div class="spinner" aria-hidden="true"></div>
+      <div class="ticker" id="tickerText">⏳ Initializing local OCR matrix...</div>
+      <div class="bar"><i id="progressBar"></i></div>
+      <small>This runs on your device. Please keep this tab open.</small>
+    </div>
+  </div>
+
+  <script src="js/portal-engine.js"></script>
+</body>
+</html>
