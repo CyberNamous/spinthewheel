@@ -197,7 +197,7 @@ async function handleAdminAction(request, env, url) {
     case 'get_state': {
       const [q, d, b, a] = await env.DB.batch([
         env.DB.prepare(
-          'SELECT id, roblox_username, tiktok_username, level, status, source, created_at FROM qualified_entries ORDER BY id ASC'
+          'SELECT id, roblox_username, tiktok_username, level, status, source, device_hash, created_at FROM qualified_entries ORDER BY id ASC'
         ),
         env.DB.prepare(
           'SELECT id, roblox_username, tiktok_username, reason, disqualified_at, cooldown_until FROM disqualified_entries ORDER BY id DESC LIMIT 500'
@@ -267,6 +267,47 @@ async function handleAdminAction(request, env, url) {
           'INSERT OR IGNORE INTO permanent_blacklist (username, username_lower, reason, banned_at) VALUES (?1, ?2, ?3, ?4)'
         ).bind(username, lower, String(body.reason || 'admin ban').slice(0, 200), now),
         env.DB.prepare('DELETE FROM qualified_entries WHERE roblox_lower = ?1 OR tiktok_lower = ?1').bind(lower)
+      ]);
+      return json({ ok: true });
+    }
+
+    case 'disqualify': {
+      const allowed = ['multiple entries', 'fake screenshot', 'other'];
+      const reasonKey = allowed.includes(body.reason) ? body.reason : 'other';
+      const reason = `manual: ${reasonKey}`;
+      const cooldown = now + COOLDOWN_MS;
+      let existing = null;
+      if (Number.isInteger(Number(body.id)) && body.id !== undefined && body.id !== null && body.id !== '') {
+        existing = await env.DB.prepare('SELECT * FROM qualified_entries WHERE id = ?1').bind(Number(body.id)).first();
+        if (!existing) return json({ ok: false, error: 'That entry no longer exists.' }, 404);
+      } else {
+        const typed = String(body.roblox || '').trim();
+        if (!NAME_RE.test(typed)) return json({ ok: false, error: 'Enter a valid Roblox username.' }, 400);
+        existing = await env.DB.prepare('SELECT * FROM qualified_entries WHERE roblox_lower = ?1').bind(typed.toLowerCase()).first();
+        if (!existing) {
+          await env.DB.batch([
+            env.DB.prepare(
+              `INSERT INTO disqualified_entries (roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at, cooldown_until)
+               VALUES (?1, ?2, '(unknown)', '(unknown)', ?3, '', ?4, ?5)`
+            ).bind(typed, typed.toLowerCase(), reason, now, cooldown),
+            env.DB.prepare('INSERT INTO live_alerts (message, created_at) VALUES (?1, ?2)').bind(
+              `🚨 DISQUALIFIED: ${typed} (${reasonKey})`,
+              now
+            )
+          ]);
+          return json({ ok: true });
+        }
+      }
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO disqualified_entries (roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at, cooldown_until)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
+        ).bind(existing.roblox_username, existing.roblox_lower, existing.tiktok_username, existing.tiktok_lower, reason, existing.device_hash || '', now, cooldown),
+        env.DB.prepare('DELETE FROM qualified_entries WHERE id = ?1').bind(existing.id),
+        env.DB.prepare('INSERT INTO live_alerts (message, created_at) VALUES (?1, ?2)').bind(
+          `🚨 DISQUALIFIED: ${existing.roblox_username} (${reasonKey})`,
+          now
+        )
       ]);
       return json({ ok: true });
     }
