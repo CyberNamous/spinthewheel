@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join the Survival Wheel</title>
+<style>
+:root{--bg:#0f0f11;--panel:#16161a;--line:#2b2b33;--pink:#ff69b4;--pink2:#ff479d;--neon:#ff007f;--text:#ffffff;--muted:#a0a0aa;--bad:#ff4d6d;--ok:#ff69b4}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:radial-gradient(900px 500px at 50% -10%,#2a0f20 0%,var(--bg) 70%);color:var(--text);font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;display:flex;justify-content:center;padding:28px 16px 48px}
+main{width:100%;max-width:540px}
+h1{font-size:clamp(2rem,7vw,2.8rem);line-height:1.05;margin:0 0 8px;font-weight:900;letter-spacing:-.02em;color:var(--pink2);text-shadow:0 0 28px rgba(255,0,127,.45)}
+.lede{color:var(--muted);margin:0 0 24px;line-height:1.5}
+form{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;display:grid;gap:18px}
+label,.lbl{display:block;font-weight:700;margin-bottom:6px}
+input[type=text]{width:100%;background:#0f0f11;border:1.5px solid var(--line);border-radius:10px;color:var(--text);font:inherit;padding:12px 14px}
+input[type=text]:focus{outline:none;border-color:var(--neon);box-shadow:0 0 0 3px rgba(255,0,127,.25)}
+input.invalid{border-color:var(--bad)}
+.err{color:var(--bad);font-size:.88rem;min-height:1.1em;margin-top:5px}
+.drop{display:flex;align-items:center;gap:12px;border:1.5px dashed var(--pink2);border-radius:10px;padding:14px;cursor:pointer;color:var(--muted);background:#12121a}
+.drop:hover,.drop:focus-within{border-color:var(--neon);color:var(--text)}
+.drop input{position:absolute;opacity:0;width:1px;height:1px}
+.drop b{color:var(--pink)}
+.linkbtn{background:none;border:0;color:var(--pink);font:inherit;font-weight:700;cursor:pointer;padding:0;text-align:left}
+.linkbtn:focus-visible,button:focus-visible{outline:2px solid var(--neon);outline-offset:3px}
+#tutorial{background:#12121a;border:1px solid var(--line);border-radius:10px;padding:14px;color:var(--muted)}
+#tutorial[hidden]{display:none}
+#tutorial ol{margin:0 0 12px;padding-left:20px;line-height:1.55}
+.shots{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.shots img{width:100%;border-radius:8px;border:1px solid var(--line);background:#0f0f11;min-height:90px;object-fit:cover}
+#go{background:linear-gradient(135deg,var(--neon),var(--pink2));color:#fff;border:0;border-radius:10px;font:inherit;font-weight:800;font-size:1.05rem;padding:14px;cursor:pointer;box-shadow:0 8px 30px rgba(255,0,127,.35)}
+#go:disabled{opacity:.55;cursor:progress}
+.bar{height:10px;background:#0f0f11;border-radius:99px;overflow:hidden;border:1px solid var(--line)}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--neon),var(--pink));transition:width .35s ease}
+#progress[hidden]{display:none}
+#status{margin:8px 0 0;color:var(--muted);font-size:.92rem}
+#result{border-radius:10px;padding:14px;line-height:1.45;font-weight:600}
+#result[hidden]{display:none}
+#result.good{background:rgba(255,105,180,.12);border:1px solid var(--pink);color:var(--pink)}
+#result.bad{background:rgba(255,77,109,.1);border:1px solid var(--bad);color:var(--bad)}
+@media (prefers-reduced-motion:reduce){.bar i{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Join the Survival Wheel</h1>
+  <p class="lede">Enter your usernames and upload a screenshot of your TikTok fan level. Your screenshot is read on your device and never uploaded.</p>
+  <form id="form" novalidate>
+    <div>
+      <label for="roblox">Roblox Username</label>
+      <input type="text" id="roblox" autocomplete="off" maxlength="20" placeholder="e.g. PinkPanda_22">
+      <div class="err" id="robloxErr"></div>
+    </div>
+    <div>
+      <label for="tiktok">TikTok Username</label>
+      <input type="text" id="tiktok" autocomplete="off" maxlength="20" placeholder="e.g. mayumi_fan">
+      <div class="err" id="tiktokErr"></div>
+    </div>
+    <div>
+      <span class="lbl">Fan level screenshot</span>
+      <label class="drop" for="shot"><span aria-hidden="true">🖼️</span><span id="fileName"><b>Choose a screenshot</b> (PNG, JPG or WebP, up to 10 MB)</span></label>
+      <input type="file" id="shot" accept="image/png,image/jpeg,image/webp" style="position:absolute;opacity:0;width:1px;height:1px">
+      <div class="err" id="shotErr"></div>
+      <button type="button" class="linkbtn" id="tutBtn" aria-expanded="false" aria-controls="tutorial">❓ How to get screenshot</button>
+      <div id="tutorial" hidden>
+        <ol>
+          <li>Open the stream's TikTok fan club page.</li>
+          <li>Make sure your fan level and the fan club name are both visible.</li>
+          <li>Take a screenshot. Don't crop, edit or filter it.</li>
+        </ol>
+        <div class="shots">
+          <img src="images/filler1.png" alt="Example screenshot showing the fan club page" loading="lazy">
+          <img src="images/filler2.png" alt="Example screenshot showing the fan level badge" loading="lazy">
+        </div>
+      </div>
+    </div>
+    <div id="progress" hidden>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="fill"></i></div>
+      <p id="status" aria-live="polite"></p>
+    </div>
+    <div id="result" role="status" aria-live="polite" hidden></div>
+    <button type="submit" id="go">Scan and enter the wheel</button>
+  </form>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+(function () {
+  var NAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
+  var FAN_FLAG = 'famayumi';
+  var MAX_BYTES = 10 * 1024 * 1024;
+  var $ = function (id) { return document.getElementById(id); };
+  var form = $('form'), fileInput = $('shot'), go = $('go'), result = $('result');
+  var progressBox = $('progress'), fill = $('fill'), statusEl = $('status');
+
+  $('tutBtn').addEventListener('click', function () {
+    var box = $('tutorial');
+    var open = box.hidden;
+    box.hidden = !open;
+    this.setAttribute('aria-expanded', String(open));
+  });
+
+  fileInput.addEventListener('change', function () {
+    var f = fileInput.files && fileInput.files[0];
+    $('fileName').textContent = f ? f.name : 'Choose a screenshot (PNG, JPG or WebP, up to 10 MB)';
+    $('shotErr').textContent = '';
+  });
+
+  function setProgress(pct, text) {
+    progressBox.hidden = false;
+    fill.style.width = pct + '%';
+    fill.parentNode.setAttribute('aria-valuenow', String(Math.round(pct)));
+    statusEl.textContent = text;
+  }
+
+  function showResult(ok, text) {
+    result.hidden = false;
+    result.className = ok ? 'good' : 'bad';
+    result.textContent = text;
+  }
+
+  function checkName(input, errEl) {
+    var ok = NAME_RE.test(input.value.trim());
+    input.classList.toggle('invalid', !ok);
+    errEl.textContent = ok ? '' : 'Use 3-20 letters, numbers or underscores.';
+    return ok;
+  }
+
+  ['roblox', 'tiktok'].forEach(function (id) {
+    $(id).addEventListener('input', function () { checkName($(id), $(id + 'Err')); });
+  });
+
+  function bytesToText(buf) {
+    var bytes = new Uint8Array(buf);
+    var limit = Math.min(bytes.length, 6 * 1024 * 1024);
+    var out = '';
+    for (var i = 0; i < limit; i += 32768) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 32768, limit)));
+    }
+    return out;
+  }
+
+  function inspectImage(buf) {
+    var b = new Uint8Array(buf.slice(0, 12));
+    var png = b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+    var jpg = b[0] === 0xff && b[1] === 0xd8;
+    var webp = b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45;
+    if (!png && !jpg && !webp) return { blocked: true, reason: 'That file is not a valid PNG, JPG or WebP image.' };
+    var raw = bytesToText(buf);
+    var low = raw.toLowerCase();
+    var hasC2pa = low.indexOf('c2pa') !== -1 || low.indexOf('jumbf') !== -1 || low.indexOf('contentcredentials') !== -1 || raw.indexOf('caBX') !== -1;
+    var ai = /trainedalgorithmicmedia|algorithmicmedia|midjourney|dall[-\s]?e|openai|firefly|stable[\s-]?diffusion|stability\.ai|synthid|leonardo\.ai|imagen|chatgpt/.test(low);
+    if (ai || (hasC2pa && /generative|ai[-\s]?generated|generator/.test(low))) {
+      return { blocked: true, reason: 'This image carries AI-generation credentials. Upload a real, unedited screenshot.' };
+    }
+    if (/adobe photoshop\s*(cc|cs|\d)|creatortool[^a-z]{1,8}adobe photoshop/i.test(raw)) {
+      return { blocked: true, reason: 'This image was edited in Photoshop. Upload an unedited screenshot.' };
+    }
+    return { blocked: false };
+  }
+
+  function collectLines(data) {
+    if (data.lines && data.lines.length) return data.lines.map(function (l) { return l.words || []; });
+    var out = [];
+    (data.blocks || []).forEach(function (bl) {
+      (bl.paragraphs || []).forEach(function (p) {
+        (p.lines || []).forEach(function (l) { out.push(l.words || []); });
+      });
+    });
+    return out;
+  }
+
+  function fontBoundaryFlag(lines) {
+    var total = 0, bad = 0;
+    lines.forEach(function (words) {
+      var w = words.filter(function (x) { return x.bbox && x.text && x.text.trim().length > 1 && x.confidence > 40; });
+      if (w.length < 3) return;
+      var heights = w.map(function (x) { return x.bbox.y1 - x.bbox.y0; }).sort(function (a, b) { return a - b; });
+      var med = heights[heights.length >> 1] || 1;
+      var centers = w.map(function (x) { return (x.bbox.y0 + x.bbox.y1) / 2; }).sort(function (a, b) { return a - b; });
+      var cm = centers[centers.length >> 1];
+      w.forEach(function (x) {
+        total++;
+        var h = x.bbox.y1 - x.bbox.y0;
+        var c = (x.bbox.y0 + x.bbox.y1) / 2;
+        if (Math.abs(h - med) / med > 0.6 || Math.abs(c - cm) > med * 0.7) bad++;
+      });
+    });
+    return total >= 8 && bad / total > 0.3;
+  }
+
+  function parseLevel(text) {
+    var best = 0, m, re = /\b(?:level|lvl|lv)\.?\s*[:\-]?\s*(\d{1,3})\b/gi;
+    while ((m = re.exec(text))) best = Math.max(best, Number(m[1]));
+    return best;
+  }
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    result.hidden = true;
+    var okR = checkName($('roblox'), $('robloxErr'));
+    var okT = checkName($('tiktok'), $('tiktokErr'));
+    var file = fileInput.files && fileInput.files[0];
+    if (!file) $('shotErr').textContent = 'Choose a screenshot first.';
+    else if (file.size > MAX_BYTES) { $('shotErr').textContent = 'That file is over 10 MB.'; file = null; }
+    if (!okR || !okT || !file) return;
+
+    var roblox = $('roblox').value.trim(), tiktok = $('tiktok').value.trim();
+    var buf = null, blob = null, worker = null;
+    go.disabled = true;
+    try {
+      setProgress(5, 'Reading your screenshot in memory...');
+      buf = await file.arrayBuffer();
+
+      setProgress(15, 'Checking image credentials...');
+      var verdict = inspectImage(buf);
+      if (verdict.blocked) throw new Error(verdict.reason);
+
+      if (typeof Tesseract === 'undefined') throw new Error('The text scanner failed to load. Check your connection and refresh.');
+      setProgress(22, 'Starting the text scanner...');
+      blob = new Blob([buf], { type: file.type || 'image/png' });
+      var data = (await Tesseract.recognize(blob, 'eng', {
+        logger: function (m) {
+          if (m.status === 'recognizing text') setProgress(25 + m.progress * 60, 'Reading text: ' + Math.round(m.progress * 100) + '%');
+        }
+      })).data;
+
+      setProgress(88, 'Checking text consistency...');
+      if (fontBoundaryFlag(collectLines(data))) throw new Error('The text in this screenshot looks edited. Upload an unedited screenshot.');
+
+      buf = null; blob = null;
+      fileInput.value = '';
+      $('fileName').textContent = 'Choose a screenshot (PNG, JPG or WebP, up to 10 MB)';
+
+      var tokens = String(data.text || '').toLowerCase().replace(/[^a-z0-9\s.:+\-]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1500);
+      var level = parseLevel(tokens);
+      if (level < 5) throw new Error('We read fan level ' + level + '. You need level 5 or higher.');
+      if (tokens.replace(/[^a-z0-9]/g, '').indexOf(FAN_FLAG) === -1) throw new Error('We could not find the fan club name in your screenshot.');
+
+      setProgress(94, 'Sending your entry...');
+      var res = await fetch('/api/submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ roblox: roblox, tiktok: tiktok, ocrText: tokens, level: level })
+      });
+      var out = {};
+      try { out = await res.json(); } catch (_) {}
+      if (!res.ok || !out.ok) throw new Error(out.error || 'Something went wrong. Try again.');
+      setProgress(100, 'Done.');
+      showResult(true, out.message || 'You are on the wheel.');
+      form.reset();
+    } catch (err) {
+      progressBox.hidden = true;
+      showResult(false, err && err.message ? err.message : 'Something went wrong. Try again.');
+    } finally {
+      buf = null; blob = null; worker = null;
+      fileInput.value = '';
+      go.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>

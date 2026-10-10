@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Wheel Admin</title>
+<style>
+:root{--bg:#0f0f11;--panel:#16161a;--line:#2b2b33;--pink:#ff69b4;--pink2:#ff479d;--neon:#ff007f;--text:#ffffff;--muted:#a0a0aa;--green:#3ddc84;--red:#ff4d5e}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;min-height:100vh}
+[hidden]{display:none!important}
+header.top{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--line);background:var(--panel)}
+h1{margin:0;font-size:1.5rem;font-weight:900;color:var(--pink2);text-shadow:0 0 20px rgba(255,0,127,.4)}
+h2{margin:0 0 6px;font-size:1.25rem}
+.meta{color:var(--muted);font-size:.92rem}
+main{padding:24px;display:grid;gap:22px;max-width:1500px;margin:0 auto}
+.twin{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px}
+.card.win{border-color:var(--pink);box-shadow:0 0 0 1px rgba(255,105,180,.25),0 10px 40px rgba(255,0,127,.12)}
+.card.elim{border-color:var(--neon)}
+.card p{color:var(--muted);line-height:1.5;margin:0 0 16px}
+button{font:inherit;font-weight:800;border-radius:10px;border:0;padding:12px 18px;cursor:pointer;color:#fff;background:#2a2a32}
+button:hover{filter:brightness(1.15)}
+button:disabled{opacity:.5;cursor:progress}
+button:focus-visible,input:focus-visible{outline:2px solid var(--neon);outline-offset:2px}
+.big{width:100%;padding:18px;font-size:1.15rem;background:linear-gradient(135deg,var(--neon),var(--pink2));box-shadow:0 8px 28px rgba(255,0,127,.3)}
+.big.alt{background:linear-gradient(135deg,#8a0a4f,var(--neon))}
+.sm{padding:6px 10px;font-size:.82rem;border-radius:8px}
+.danger{background:var(--red)}
+.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+.bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+input[type=text],input[type=password]{background:#0f0f11;border:1.5px solid var(--line);border-radius:10px;color:var(--text);font:inherit;padding:10px 12px;min-width:0}
+.boards{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+.board{border-radius:14px;border:1.5px solid;padding:16px;background:var(--panel);overflow:hidden}
+.board.good{border-color:var(--green)}
+.board.bad{border-color:var(--red)}
+.board h2{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.good h2{color:var(--green)}.bad h2{color:var(--red)}
+.scroll{overflow:auto;max-height:420px}
+table{width:100%;border-collapse:collapse;font-size:.92rem}
+th,td{text-align:left;padding:8px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-weight:700;position:sticky;top:0;background:var(--panel)}
+td.act{display:flex;gap:6px}
+.pill{border-radius:99px;padding:2px 10px;font-size:.8rem;font-weight:800;background:#2a2a32}
+.pill.alive{background:rgba(61,220,132,.18);color:var(--green)}
+.pill.winner{background:rgba(255,0,127,.25);color:var(--pink)}
+.empty{color:var(--muted);padding:14px 4px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chips span{background:#2a1015;color:var(--red);border-radius:99px;padding:3px 10px;font-size:.82rem;font-weight:700}
+#modal{position:fixed;inset:0;background:rgba(15,15,17,.96);display:flex;align-items:center;justify-content:center;padding:20px;z-index:10}
+#modal form{background:var(--panel);border:1px solid var(--neon);border-radius:14px;padding:26px;width:100%;max-width:380px;display:grid;gap:14px;box-shadow:0 0 50px rgba(255,0,127,.3)}
+#modal h2{color:var(--pink2)}
+#modalErr{color:var(--red);min-height:1.2em;font-size:.9rem}
+#toast{position:fixed;right:20px;bottom:20px;background:var(--panel);border:1px solid var(--pink);border-radius:10px;padding:12px 16px;font-weight:700;max-width:360px;z-index:20}
+#toast.err{border-color:var(--red);color:var(--red)}
+@media (max-width:900px){.twin,.boards{grid-template-columns:1fr}main{padding:14px}}
+</style>
+</head>
+<body>
+<div id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <form id="authForm">
+    <h2 id="mTitle">Admin sign in</h2>
+    <div class="meta">Enter the admin token to open the control panel.</div>
+    <input type="password" id="tokenInput" autocomplete="current-password" placeholder="Admin token" required>
+    <div id="modalErr" aria-live="polite"></div>
+    <button class="big" type="submit">Unlock panel</button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="top">
+    <h1>Wheel Control Panel</h1>
+    <div class="bar">
+      <span class="meta" id="cmdInfo"></span>
+      <button class="ghost" id="gateBtn" type="button"></button>
+      <button class="ghost" id="clearAlerts" type="button">Clear banner</button>
+    </div>
+  </header>
+  <main>
+    <section class="twin">
+      <div class="card win">
+        <h2>🏆 Declare Winner Mode</h2>
+        <p>Spins the wheel on stream and crowns one alive entry as the permanent winner. The winner stays recorded in the database.</p>
+        <button class="big" id="spinWinner" type="button">Spin for the winner</button>
+      </div>
+      <div class="card elim">
+        <h2>❌ Matirang Matibay Mode</h2>
+        <p>Spins the wheel and crosses the knocked-out player off on screen only. Database records stay untouched.</p>
+        <button class="big alt" id="spinElim" type="button">Spin to knock one out</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Manual override</h2>
+      <p class="meta" style="margin:0 0 12px">Add a player without a screenshot. This also lifts any cooldown on those names.</p>
+      <form class="bar" id="manualForm">
+        <input type="text" id="mRoblox" placeholder="Roblox username" maxlength="20" required>
+        <input type="text" id="mTiktok" placeholder="TikTok username" maxlength="20" required>
+        <button type="submit">Add to wheel</button>
+        <span style="flex:1"></span>
+        <button class="ghost" id="resetWheel" type="button">🔄 Reset Wheel</button>
+        <button class="danger" id="wipe" type="button">🧽 Wipe D1 Table</button>
+      </form>
+    </section>
+
+    <section class="boards">
+      <div class="board good">
+        <h2><span>Qualified entries</span><span class="meta" id="qCount"></span></h2>
+        <div class="scroll" id="qBox"></div>
+      </div>
+      <div class="board bad">
+        <h2><span>Blacklisted cheaters</span><span class="meta" id="dCount"></span></h2>
+        <div class="scroll" id="dBox"></div>
+        <div class="meta" style="margin-top:12px">Permanently banned</div>
+        <div class="chips" id="banChips"></div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast" hidden></div>
+
+<script>
+(function () {
+  var token = '';
+  var timer = null;
+  var $ = function (id) { return document.getElementById(id); };
+  var NAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
+
+  function h(tag, props) {
+    var el = document.createElement(tag);
+    props = props || {};
+    Object.keys(props).forEach(function (k) {
+      if (k === 'class') el.className = props[k];
+      else if (k.indexOf('on') === 0) el.addEventListener(k.slice(2), props[k]);
+      else el.setAttribute(k, props[k]);
+    });
+    for (var i = 2; i < arguments.length; i++) {
+      [].concat(arguments[i]).forEach(function (c) {
+        el.append(c instanceof Node ? c : document.createTextNode(c == null ? '' : String(c)));
+      });
+    }
+    return el;
+  }
+
+  function toast(msg, isErr) {
+    var t = $('toast');
+    t.textContent = msg; t.className = isErr ? 'err' : ''; t.hidden = false;
+    clearTimeout(toast.t);
+    toast.t = setTimeout(function () { t.hidden = true; }, 3500);
+  }
+
+  function lock(message) {
+    clearInterval(timer);
+    $('app').hidden = true;
+    $('modal').hidden = false;
+    $('modalErr').textContent = message || '';
+    $('tokenInput').value = '';
+    $('tokenInput').focus();
+  }
+
+  async function api(action, extra) {
+    var res = await fetch('/api/admin-action', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify(Object.assign({ action: action }, extra || {}))
+    });
+    var data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (res.status === 401) { lock('That token was not accepted.'); throw new Error('Unauthorized'); }
+    return data;
+  }
+
+  async function run(action, extra, okMsg) {
+    try {
+      var d = await api(action, extra);
+      if (d.ok) { if (okMsg) toast(okMsg); await refresh(); }
+      else toast(d.error || 'Action failed.', true);
+      return d;
+    } catch (e) {
+      if (e.message !== 'Unauthorized') toast('Network error.', true);
+      return { ok: false };
+    }
+  }
+
+  function when(ms) { return ms ? new Date(ms).toLocaleString() : ''; }
+
+  function banBtn(name) {
+    return h('button', { class: 'sm danger', type: 'button', onclick: function () {
+      if (confirm('Permanently ban ' + name + '?')) run('perm_ban', { username: name, reason: 'admin ban' }, name + ' banned.');
+    } }, '🚨 Perm Ban');
+  }
+
+  function renderQualified(rows) {
+    var box = $('qBox'); box.textContent = '';
+    $('qCount').textContent = rows.length + ' entered';
+    if (!rows.length) { box.append(h('div', { class: 'empty' }, 'No qualified entries yet.')); return; }
+    var body = h('tbody');
+    rows.forEach(function (r) {
+      body.append(h('tr', {},
+        h('td', {}, r.roblox_username), h('td', {}, r.tiktok_username), h('td', {}, r.level || '—'),
+        h('td', {}, h('span', { class: 'pill ' + r.status }, r.status)),
+        h('td', {}, r.source),
+        h('td', { class: 'act' },
+          h('button', { class: 'sm ghost', type: 'button', onclick: function () { run('remove_entry', { id: r.id }, 'Entry removed.'); } }, 'Remove'),
+          banBtn(r.roblox_username))));
+    });
+    box.append(h('table', {},
+      h('thead', {}, h('tr', {}, ['Roblox', 'TikTok', 'Lv', 'Status', 'Source', ''].map(function (t) { return h('th', {}, t); }))), body));
+  }
+
+  function renderDisq(rows, bans) {
+    var box = $('dBox'); box.textContent = '';
+    $('dCount').textContent = rows.length + ' caught';
+    if (!rows.length) box.append(h('div', { class: 'empty' }, 'No cheaters caught.'));
+    else {
+      var body = h('tbody');
+      rows.forEach(function (r) {
+        body.append(h('tr', {},
+          h('td', {}, r.roblox_username), h('td', {}, r.tiktok_username), h('td', {}, r.reason),
+          h('td', {}, when(r.cooldown_until)), h('td', { class: 'act' }, banBtn(r.roblox_username))));
+      });
+      box.append(h('table', {},
+        h('thead', {}, h('tr', {}, ['Roblox', 'TikTok', 'Reason', 'Cooldown until', ''].map(function (t) { return h('th', {}, t); }))), body));
+    }
+    var chips = $('banChips'); chips.textContent = '';
+    if (!bans.length) chips.append(h('span', {}, 'none'));
+    bans.forEach(function (b) { chips.append(h('span', {}, b.username)); });
+  }
+
+  async function refresh() {
+    var d;
+    try { d = await api('get_state'); } catch (_) { return; }
+    if (!d.ok) return;
+    renderQualified(d.qualified);
+    renderDisq(d.disqualified, d.blacklist);
+    var c = d.config || {};
+    var open = c.registration_gate === 'open';
+    $('gateBtn').textContent = open ? 'Registration: open (tap to close)' : 'Registration: closed (tap to open)';
+    $('gateBtn').dataset.next = open ? 'closed' : 'open';
+    $('cmdInfo').textContent = 'Command: ' + (c.wheel_command || 'idle') + (c.last_landed ? ' • Last landed: ' + c.last_landed : '');
+  }
+
+  async function unlock(candidate) {
+    token = candidate;
+    try {
+      var d = await api('verify');
+      if (!d.ok) return false;
+    } catch (_) { return false; }
+    $('modal').hidden = true;
+    $('app').hidden = false;
+    await refresh();
+    clearInterval(timer);
+    timer = setInterval(refresh, 4000);
+    return true;
+  }
+
+  $('authForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    $('modalErr').textContent = 'Checking...';
+    var ok = await unlock($('tokenInput').value.trim());
+    if (!ok) $('modalErr').textContent = 'That token was not accepted.';
+  });
+
+  $('spinWinner').addEventListener('click', async function () {
+    if (!confirm('Crown a permanent winner now?')) return;
+    var b = this; b.disabled = true;
+    var d = await run('spin_winner', {});
+    if (d.ok) toast('Spinning for the winner...');
+    setTimeout(function () { b.disabled = false; }, 14000);
+  });
+  $('spinElim').addEventListener('click', async function () {
+    var b = this; b.disabled = true;
+    var d = await run('spin_elim', {});
+    if (d.ok) toast('Spinning to knock one out...');
+    setTimeout(function () { b.disabled = false; }, 17000);
+  });
+  $('resetWheel').addEventListener('click', function () {
+    if (confirm('Reset the wheel? All entries come back alive and any winner is cleared.')) run('reset_wheel', {}, 'Wheel reset.');
+  });
+  $('wipe').addEventListener('click', function () {
+    if (confirm('Wipe all entries, cheater logs and alerts? Permanent bans are kept. This cannot be undone.')) run('wipe_d1', {}, 'Tables wiped.');
+  });
+  $('gateBtn').addEventListener('click', function () { run('set_gate', { value: this.dataset.next }, 'Registration updated.'); });
+  $('clearAlerts').addEventListener('click', function () { run('clear_alerts', {}, 'Banner cleared.'); });
+  $('manualForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var r = $('mRoblox').value.trim(), t = $('mTiktok').value.trim();
+    if (!NAME_RE.test(r) || !NAME_RE.test(t)) { toast('Use 3-20 letters, numbers or underscores.', true); return; }
+    var d = await run('manual_add', { roblox: r, tiktok: t }, r + ' added.');
+    if (d.ok) { $('mRoblox').value = ''; $('mTiktok').value = ''; }
+  });
+
+  var params = new URLSearchParams(location.search);
+  var urlToken = params.get('token');
+  if (urlToken) history.replaceState(null, '', location.pathname);
+  if (urlToken) {
+    unlock(urlToken).then(function (ok) { if (!ok) lock('That token was not accepted.'); });
+  } else {
+    lock('');
+  }
+})();
+</script>
+</body>
+</html>
