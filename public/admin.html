@@ -31,6 +31,12 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--neon);outline-o
 .danger{background:var(--red)}
 .ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
 .bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+select{background:#0f0f11;border:1.5px solid var(--line);border-radius:10px;color:var(--text);font:inherit;padding:10px 12px}
+tr.dup td{background:rgba(255,77,94,.14)}
+.devtag{font-family:ui-monospace,Menlo,monospace;color:var(--muted)}
+#rsn{position:fixed;inset:0;background:rgba(15,15,17,.88);display:flex;align-items:center;justify-content:center;padding:20px;z-index:15}
+#rsn .rbox{background:var(--panel);border:1px solid var(--red);border-radius:14px;padding:22px;width:100%;max-width:360px;display:grid;gap:10px}
+#rsn h2{color:var(--red)}
 input[type=text],input[type=password]{background:#0f0f11;border:1.5px solid var(--line);border-radius:10px;color:var(--text);font:inherit;padding:10px 12px;min-width:0}
 .boards{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
 .board{border-radius:14px;border:1.5px solid;padding:16px;background:var(--panel);overflow:hidden}
@@ -69,6 +75,17 @@ td.act{display:flex;gap:6px}
   </form>
 </div>
 
+<div id="rsn" role="dialog" aria-modal="true" aria-labelledby="rsnTitle" hidden>
+  <div class="rbox">
+    <h2 id="rsnTitle">Disqualify <span id="rsnName"></span></h2>
+    <div class="meta">Pick a reason. They leave the wheel and get a 15-day cooldown.</div>
+    <button type="button" data-r="multiple entries">Multiple entries</button>
+    <button type="button" data-r="fake screenshot">Fake screenshot</button>
+    <button type="button" data-r="other">Other</button>
+    <button type="button" class="ghost" id="rsnCancel">Cancel</button>
+  </div>
+</div>
+
 <div id="app" hidden>
   <header class="top">
     <h1>Wheel Control Panel</h1>
@@ -102,6 +119,15 @@ td.act{display:flex;gap:6px}
         <span style="flex:1"></span>
         <button class="ghost" id="resetWheel" type="button">🔄 Reset Wheel</button>
         <button class="danger" id="wipe" type="button">🧽 Wipe D1 Table</button>
+      </form>
+      <form class="bar" id="dqForm" style="margin-top:14px">
+        <input type="text" id="dqName" placeholder="Roblox username to disqualify" maxlength="20" required>
+        <select id="dqReason" aria-label="Reason">
+          <option value="multiple entries">Multiple entries</option>
+          <option value="fake screenshot">Fake screenshot</option>
+          <option value="other">Other</option>
+        </select>
+        <button class="danger" type="submit">Disqualify</button>
       </form>
     </section>
 
@@ -192,22 +218,45 @@ td.act{display:flex;gap:6px}
     } }, '🚨 Perm Ban');
   }
 
+  function askReason(name) {
+    return new Promise(function (resolve) {
+      $('rsnName').textContent = name;
+      var m = $('rsn');
+      m.hidden = false;
+      function done(v) { m.hidden = true; m.removeEventListener('click', onClick); resolve(v); }
+      function onClick(e) {
+        var b = e.target.closest('button[data-r]');
+        if (b) done(b.dataset.r);
+        else if (e.target.id === 'rsnCancel' || e.target === m) done(null);
+      }
+      m.addEventListener('click', onClick);
+    });
+  }
+
   function renderQualified(rows) {
     var box = $('qBox'); box.textContent = '';
     $('qCount').textContent = rows.length + ' entered';
     if (!rows.length) { box.append(h('div', { class: 'empty' }, 'No qualified entries yet.')); return; }
+    var seen = {};
+    rows.forEach(function (r) { if (r.device_hash) seen[r.device_hash] = (seen[r.device_hash] || 0) + 1; });
     var body = h('tbody');
     rows.forEach(function (r) {
-      body.append(h('tr', {},
+      var shared = r.device_hash && seen[r.device_hash] > 1;
+      body.append(h('tr', { class: shared ? 'dup' : '' },
         h('td', {}, r.roblox_username), h('td', {}, r.tiktok_username), h('td', {}, r.level || '—'),
         h('td', {}, h('span', { class: 'pill ' + r.status }, r.status)),
         h('td', {}, r.source),
+        h('td', { class: 'devtag', title: shared ? 'Shares a device with another entry' : 'Device tag' }, r.device_hash ? r.device_hash.slice(0, 6) : '—'),
         h('td', { class: 'act' },
           h('button', { class: 'sm ghost', type: 'button', onclick: function () { run('remove_entry', { id: r.id }, 'Entry removed.'); } }, 'Remove'),
+          h('button', { class: 'sm danger', type: 'button', onclick: async function () {
+            var reason = await askReason(r.roblox_username);
+            if (reason) run('disqualify', { id: r.id, reason: reason }, r.roblox_username + ' disqualified.');
+          } }, 'Disqualify'),
           banBtn(r.roblox_username))));
     });
     box.append(h('table', {},
-      h('thead', {}, h('tr', {}, ['Roblox', 'TikTok', 'Lv', 'Status', 'Source', ''].map(function (t) { return h('th', {}, t); }))), body));
+      h('thead', {}, h('tr', {}, ['Roblox', 'TikTok', 'Lv', 'Status', 'Source', 'Device', ''].map(function (t) { return h('th', {}, t); }))), body));
   }
 
   function renderDisq(rows, bans) {
@@ -290,6 +339,14 @@ td.act{display:flex;gap:6px}
     if (!NAME_RE.test(r) || !NAME_RE.test(t)) { toast('Use 3-20 letters, numbers or underscores.', true); return; }
     var d = await run('manual_add', { roblox: r, tiktok: t }, r + ' added.');
     if (d.ok) { $('mRoblox').value = ''; $('mTiktok').value = ''; }
+  });
+
+  $('dqForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var n = $('dqName').value.trim();
+    if (!NAME_RE.test(n)) { toast('Use 3-20 letters, numbers or underscores.', true); return; }
+    var d = await run('disqualify', { roblox: n, reason: $('dqReason').value }, n + ' disqualified.');
+    if (d.ok) $('dqName').value = '';
   });
 
   var params = new URLSearchParams(location.search);
