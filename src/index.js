@@ -1,7 +1,9 @@
 const NAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
-const COOLDOWN_MS = 15 * 24 * 60 * 60 * 1000;
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const ALERT_TTL_MS = 120000;
 const MAX_BODY = 20000;
+const MAX_SHOT_CHARS = 450000;
+const MAX_APPLY_BODY = 520000;
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -18,6 +20,31 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const sha256Hex = async (text) => {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
+const lev = (a, b) => {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+};
+
+const containsFan = (text, fan) => {
+  const hay = norm(text);
+  if (hay.includes(fan)) return true;
+  if (fan.length < 7) return false;
+  for (let i = 0; i < hay.length; i++) {
+    for (let d = -1; d <= 1; d++) {
+      const len = fan.length + d;
+      if (i + len <= hay.length && lev(hay.substr(i, len), fan) <= 1) return true;
+    }
+  }
+  return false;
 };
 
 const parseLevel = (text) => {
@@ -56,107 +83,212 @@ const isAdmin = async (request, env, url) => {
   return crypto.subtle.timingSafeEqual(a, b);
 };
 
-async function handleSubmit(request, env) {
-  if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed.' }, 405);
 
-  const config = await readConfig(env);
-  if (config.registration_gate !== 'open') {
-    return json({ ok: false, code: 'closed', error: 'Registration is closed.' }, 403);
-  }
+const randomHex = (bytes) =>
+  [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
-  const raw = await request.text();
-  if (raw.length > MAX_BODY) return json({ ok: false, error: 'Payload too large.' }, 413);
-  let body;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return json({ ok: false, error: 'Invalid JSON.' }, 400);
-  }
-
-  const roblox = String(body.roblox || '').trim();
-  const tiktok = String(body.tiktok || '').trim();
-  if (!NAME_RE.test(roblox) || !NAME_RE.test(tiktok)) {
-    return json({ ok: false, error: 'Usernames must be 3-20 letters, numbers or underscores.' }, 400);
-  }
-  const rl = roblox.toLowerCase();
-  const tl = tiktok.toLowerCase();
-  const now = Date.now();
-
-  const [banned, cooling] = await env.DB.batch([
-    env.DB.prepare('SELECT 1 AS hit FROM permanent_blacklist WHERE username_lower IN (?1, ?2) LIMIT 1').bind(rl, tl),
-    env.DB.prepare(
-      'SELECT cooldown_until FROM disqualified_entries WHERE (roblox_lower = ?1 OR tiktok_lower = ?2) AND cooldown_until > ?3 ORDER BY cooldown_until DESC LIMIT 1'
-    ).bind(rl, tl, now)
-  ]);
-  if (banned.results.length) {
-    return json({ ok: false, code: 'banned', error: 'This account is permanently banned from the wheel.' }, 403);
-  }
-  if (cooling.results.length) {
-    const days = Math.ceil((cooling.results[0].cooldown_until - now) / 86400000);
-    return json({ ok: false, code: 'cooldown', error: `This account is on cooldown for ${days} more day(s).` }, 403);
-  }
-
-  const ocr = String(body.ocrText || '')
+const cleanOcr = (t) =>
+  String(t || '')
     .toLowerCase()
     .replace(/[^a-z0-9\s.:+\-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 2000);
+
+const cleanLine = (s, n) => String(s || '').replace(/[\u0000-\u001f<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+
+const deviceHashFor = async (request) => {
+  const ip = request.headers.get('CF-Connecting-IP') || '';
+  const ua = request.headers.get('User-Agent') || '';
+  return (await sha256Hex(`${ip}|${ua}`)).slice(0, 32);
+};
+
+const readBody = async (request, max) => {
+  const raw = await request.text();
+  if (raw.length > max) return { error: json({ ok: false, error: 'Payload too large.' }, 413) };
+  try {
+    return { body: JSON.parse(raw) };
+  } catch {
+    return { error: json({ ok: false, error: 'Invalid JSON.' }, 400) };
+  }
+};
+
+const findOpenGiveaway = (env, now) =>
+  env.DB.prepare(
+    "SELECT id, expires_at FROM giveaways WHERE status = 'open' AND expires_at > ?1 ORDER BY id DESC LIMIT 1"
+  ).bind(now).first();
+
+const activeGiveaway = (env) =>
+  env.DB.prepare("SELECT id, status, opened_at, expires_at FROM giveaways WHERE status != 'ended' ORDER BY id DESC LIMIT 1").first();
+
+const expireGiveaways = async (env, now) => {
+  const r = await env.DB.prepare(
+    "UPDATE giveaways SET status = 'closed', token_hash = '' WHERE status = 'open' AND expires_at <= ?1"
+  ).bind(now).run();
+  if (r.meta.changes > 0) await setConfig(env, 'registration_gate', 'closed').run();
+};
+
+const purgeEndedStatements = (env) => [
+  env.DB.prepare("DELETE FROM manual_applications WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status = 'ended')"),
+  env.DB.prepare("DELETE FROM qualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status = 'ended')"),
+  env.DB.prepare("DELETE FROM disqualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status = 'ended')"),
+  env.DB.prepare("DELETE FROM giveaways WHERE status = 'ended'")
+];
+
+async function gatekeep(env, config, body, now) {
+  if (config.registration_gate !== 'open') {
+    return { error: json({ ok: false, code: 'closed', error: 'No giveaway is open for registration right now.' }, 403) };
+  }
+  const giveaway = await findOpenGiveaway(env, now);
+  if (!giveaway) {
+    return { error: json({ ok: false, code: 'closed', error: 'Registration is closed right now.' }, 403) };
+  }
+  const roblox = String(body.roblox || '').trim();
+  const tiktok = String(body.tiktok || '').trim();
+  if (!NAME_RE.test(roblox) || !NAME_RE.test(tiktok)) {
+    return { error: json({ ok: false, error: 'Usernames must be 3-20 letters, numbers or underscores.' }, 400) };
+  }
+  const rl = roblox.toLowerCase();
+  const tl = tiktok.toLowerCase();
+  const [banned, disq] = await env.DB.batch([
+    env.DB.prepare('SELECT 1 AS hit FROM permanent_blacklist WHERE username_lower IN (?1, ?2) LIMIT 1').bind(rl, tl),
+    env.DB.prepare(
+      'SELECT 1 AS hit FROM disqualified_entries WHERE giveaway_id = ?1 AND (roblox_lower = ?2 OR tiktok_lower = ?3) LIMIT 1'
+    ).bind(giveaway.id, rl, tl)
+  ]);
+  if (banned.results.length) {
+    return { error: json({ ok: false, code: 'banned', error: 'This account is permanently banned from the wheel.' }, 403) };
+  }
+  if (disq.results.length) {
+    return { error: json({ ok: false, code: 'disqualified', error: 'This account was disqualified from this giveaway.' }, 403) };
+  }
+  return { giveaway, roblox, tiktok, rl, tl };
+}
+
+const insertEntry = async (env, gid, roblox, rl, tiktok, tl, level, device, source, now) => {
+  try {
+    const r = await env.DB.prepare(
+      `INSERT INTO qualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, level, device_hash, status, source, created_at)
+       SELECT ?8, ?1, ?2, ?3, ?4, ?5, ?6, 'alive', ?9, ?7
+       WHERE NOT EXISTS (SELECT 1 FROM qualified_entries WHERE giveaway_id = ?8 AND (roblox_lower = ?2 OR tiktok_lower = ?4))`
+    ).bind(roblox, rl, tiktok, tl, level, device, now, gid, source).run();
+    return r.meta.changes === 1;
+  } catch (err) {
+    if (String(err && err.message).includes('UNIQUE')) return false;
+    throw err;
+  }
+};
+
+async function handleSubmit(request, env) {
+  if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed.' }, 405);
+  const config = await readConfig(env);
+  const { body, error } = await readBody(request, MAX_BODY);
+  if (error) return error;
+  const now = Date.now();
+
+  const gate = await gatekeep(env, config, body, now);
+  if (gate.error) return gate.error;
+  const { giveaway, roblox, tiktok, rl, tl } = gate;
+
+  const ocr = cleanOcr(body.ocrText);
   const level = parseLevel(ocr);
   if (level < 5) {
     return json({ ok: false, code: 'level', error: 'A fan level of 5 or higher is required.' }, 422);
   }
   const fan = norm(config.fan_club_name);
-  if (!fan || !norm(ocr).includes(fan)) {
+  if (!fan || !containsFan(ocr, fan)) {
     return json({ ok: false, code: 'fanclub', error: 'The fan club name was not found in the screenshot.' }, 422);
   }
 
-  const ip = request.headers.get('CF-Connecting-IP') || '';
-  const ua = request.headers.get('User-Agent') || '';
-  const deviceHash = (await sha256Hex(`${ip}|${ua}`)).slice(0, 32);
-
-  try {
-    const result = await env.DB.prepare(
-      `INSERT INTO qualified_entries (roblox_username, roblox_lower, tiktok_username, tiktok_lower, level, device_hash, status, source, created_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'alive', 'ocr', ?7
-       WHERE NOT EXISTS (SELECT 1 FROM qualified_entries WHERE roblox_lower = ?2 OR tiktok_lower = ?4)`
-    ).bind(roblox, rl, tiktok, tl, level, deviceHash, now).run();
-    if (result.meta.changes === 1) {
-      return json({ ok: true, message: `You're in, ${roblox}. Watch the wheel on stream.` });
-    }
-  } catch (err) {
-    if (!String(err && err.message).includes('UNIQUE')) throw err;
+  const device = await deviceHashFor(request);
+  if (await insertEntry(env, giveaway.id, roblox, rl, tiktok, tl, level, device, 'ocr', now)) {
+    return json({ ok: true, message: `You're in, ${roblox}. Watch the wheel on stream.` });
   }
 
-  const cooldown = now + COOLDOWN_MS;
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO disqualified_entries (roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at, cooldown_until)
-       VALUES (?1, ?2, ?3, ?4, 'duplicate-submission', ?5, ?6, ?7)`
-    ).bind(roblox, rl, tiktok, tl, deviceHash, now, cooldown),
+      `INSERT INTO disqualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'duplicate-submission', ?6, ?7)`
+    ).bind(giveaway.id, roblox, rl, tiktok, tl, device, now),
     env.DB.prepare(
-      `INSERT INTO disqualified_entries (roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at, cooldown_until)
-       SELECT roblox_username, roblox_lower, tiktok_username, tiktok_lower, 'duplicate-submission', device_hash, ?3, ?4
+      `INSERT INTO disqualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at)
+       SELECT giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, 'duplicate-submission', device_hash, ?4
        FROM qualified_entries
-       WHERE (roblox_lower = ?1 OR tiktok_lower = ?2) AND NOT (roblox_lower = ?1 AND tiktok_lower = ?2)`
-    ).bind(rl, tl, now, cooldown),
-    env.DB.prepare('DELETE FROM qualified_entries WHERE roblox_lower = ?1 OR tiktok_lower = ?2').bind(rl, tl),
+       WHERE giveaway_id = ?1 AND (roblox_lower = ?2 OR tiktok_lower = ?3) AND NOT (roblox_lower = ?2 AND tiktok_lower = ?3)`
+    ).bind(giveaway.id, rl, tl, now),
+    env.DB.prepare('DELETE FROM qualified_entries WHERE giveaway_id = ?1 AND (roblox_lower = ?2 OR tiktok_lower = ?3)').bind(
+      giveaway.id, rl, tl
+    ),
     env.DB.prepare('INSERT INTO live_alerts (message, created_at) VALUES (?1, ?2)').bind(
       `🚨 MULTI-DEVICE CHEAT CAUGHT: ${roblox} / ${tiktok} removed from the wheel`,
       now
     )
   ]);
   return json(
-    { ok: false, code: 'duplicate', error: 'Duplicate submission detected. You were removed and are on a 15-day cooldown.' },
+    { ok: false, code: 'duplicate', error: 'Duplicate submission detected. You were removed from this giveaway.' },
     409
   );
+}
+
+async function handleApply(request, env) {
+  if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed.' }, 405);
+  const config = await readConfig(env);
+  const { body, error } = await readBody(request, MAX_APPLY_BODY);
+  if (error) return error;
+  const now = Date.now();
+
+  const gate = await gatekeep(env, config, body, now);
+  if (gate.error) return gate.error;
+  const { giveaway, roblox, tiktok, rl, tl } = gate;
+
+  const shot = String(body.screenshot || '');
+  if (shot.length > MAX_SHOT_CHARS || !/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(shot)) {
+    return json({ ok: false, error: 'The screenshot is missing or too large.' }, 400);
+  }
+
+  const onWheel = await env.DB.prepare(
+    'SELECT 1 AS hit FROM qualified_entries WHERE giveaway_id = ?1 AND (roblox_lower = ?2 OR tiktok_lower = ?3) LIMIT 1'
+  ).bind(giveaway.id, rl, tl).first();
+  if (onWheel) return json({ ok: false, code: 'entered', error: 'You are already on the wheel.' }, 409);
+
+  const key = randomHex(16);
+  const device = await deviceHashFor(request);
+  const r = await env.DB.prepare(
+    `INSERT INTO manual_applications (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, note, reason, ocr_excerpt, device_hash, screenshot, check_key, status, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12)`
+  ).bind(
+    giveaway.id, roblox, rl, tiktok, tl,
+    cleanLine(body.note, 300), cleanLine(body.reason, 200), cleanOcr(body.ocrText).slice(0, 600),
+    device, shot, key, now
+  ).run();
+  return json({ ok: true, id: r.meta.last_row_id, key });
+}
+
+async function handleApplyStatus(request, env, url) {
+  if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed.' }, 405);
+  const id = Number(url.searchParams.get('id'));
+  const key = String(url.searchParams.get('key') || '');
+  if (!Number.isInteger(id) || !/^[a-f0-9]{16,64}$/.test(key)) return json({ ok: false, error: 'Bad request.' }, 400);
+  const row = await env.DB.prepare('SELECT status, reject_reason FROM manual_applications WHERE id = ?1 AND check_key = ?2')
+    .bind(id, key).first();
+  if (!row) return json({ ok: true, status: 'removed', reason: '' });
+  return json({ ok: true, status: row.status, reason: row.reject_reason || '' });
+}
+
+async function handleRegistration(request, env) {
+  if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed.' }, 405);
+  const config = await readConfig(env);
+  const open = config.registration_gate === 'open' && !!(await findOpenGiveaway(env, Date.now()));
+  return json({ ok: true, open });
 }
 
 async function handlePublicList(request, env) {
   if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed.' }, 405);
   const now = Date.now();
   const [entries, alerts, cfg] = await env.DB.batch([
-    env.DB.prepare('SELECT roblox_username AS name, status FROM qualified_entries ORDER BY id ASC'),
+    env.DB.prepare(
+      "SELECT roblox_username AS name, status FROM qualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status != 'ended') ORDER BY id ASC"
+    ),
     env.DB.prepare('SELECT id, message, created_at FROM live_alerts WHERE created_at > ?1 ORDER BY id DESC LIMIT 5').bind(
       now - ALERT_TTL_MS
     ),
@@ -189,40 +321,105 @@ async function handleAdminAction(request, env, url) {
     return json({ ok: false, error: 'Invalid JSON.' }, 400);
   }
   const now = Date.now();
+  const noGiveaway = () => json({ ok: false, error: 'There is no active giveaway. Open one first.' }, 409);
 
   switch (body.action) {
     case 'verify':
       return json({ ok: true });
 
     case 'get_state': {
-      const [q, d, b, a] = await env.DB.batch([
+      await expireGiveaways(env, now);
+      const latest = await env.DB.prepare(
+        'SELECT id, status, opened_at, expires_at, ended_at FROM giveaways ORDER BY id DESC LIMIT 1'
+      ).first();
+      const gid = latest ? latest.id : 0;
+      const [q, d, b, a, apps] = await env.DB.batch([
         env.DB.prepare(
-          'SELECT id, roblox_username, tiktok_username, level, status, source, device_hash, created_at FROM qualified_entries ORDER BY id ASC'
-        ),
+          'SELECT id, roblox_username, tiktok_username, level, status, source, device_hash, created_at FROM qualified_entries WHERE giveaway_id = ?1 ORDER BY id ASC'
+        ).bind(gid),
         env.DB.prepare(
-          'SELECT id, roblox_username, tiktok_username, reason, disqualified_at, cooldown_until FROM disqualified_entries ORDER BY id DESC LIMIT 500'
-        ),
+          'SELECT id, roblox_username, tiktok_username, reason, disqualified_at FROM disqualified_entries WHERE giveaway_id = ?1 ORDER BY id DESC LIMIT 500'
+        ).bind(gid),
         env.DB.prepare('SELECT id, username, reason, banned_at FROM permanent_blacklist ORDER BY id DESC LIMIT 500'),
-        env.DB.prepare('SELECT id, message, created_at FROM live_alerts ORDER BY id DESC LIMIT 20')
+        env.DB.prepare('SELECT id, message, created_at FROM live_alerts ORDER BY id DESC LIMIT 20'),
+        env.DB.prepare(
+          `SELECT a.id, a.roblox_username, a.tiktok_username, a.note, a.reason, a.ocr_excerpt, a.device_hash, a.created_at,
+                  EXISTS (SELECT 1 FROM qualified_entries q WHERE q.giveaway_id = a.giveaway_id AND (q.roblox_lower = a.roblox_lower OR q.tiktok_lower = a.tiktok_lower)) AS dup
+           FROM manual_applications a WHERE a.giveaway_id = ?1 AND a.status = 'pending' ORDER BY a.id ASC LIMIT 300`
+        ).bind(gid)
       ]);
       return json({
         ok: true,
+        giveaway: latest || null,
         qualified: q.results,
         disqualified: d.results,
         blacklist: b.results,
         alerts: a.results,
+        applications: apps.results,
         config: await readConfig(env),
         now
       });
     }
 
+    case 'open_giveaway': {
+      if (await activeGiveaway(env)) {
+        return json({ ok: false, error: 'A giveaway is already active. End it before opening a new one.' }, 409);
+      }
+      const expires = now + TOKEN_TTL_MS;
+      await env.DB.batch([
+        ...purgeEndedStatements(env),
+        env.DB.prepare("INSERT INTO giveaways (token_hash, status, opened_at, expires_at) VALUES ('', 'open', ?1, ?2)").bind(
+          now, expires
+        ),
+        setConfig(env, 'registration_gate', 'open'),
+        setConfig(env, 'wheel_command', 'idle'),
+        setConfig(env, 'last_landed', ''),
+        setConfig(env, 'force_reset', 'true')
+      ]);
+      return json({ ok: true, expires_at: expires });
+    }
+
+    case 'close_registration': {
+      const g = await activeGiveaway(env);
+      if (!g) return noGiveaway();
+      await env.DB.batch([
+        env.DB.prepare("UPDATE giveaways SET status = 'closed', token_hash = '' WHERE id = ?1 AND status = 'open'").bind(g.id),
+        setConfig(env, 'registration_gate', 'closed')
+      ]);
+      return json({ ok: true });
+    }
+
+    case 'end_giveaway': {
+      const g = await activeGiveaway(env);
+      if (!g) return noGiveaway();
+      await env.DB.batch([
+        env.DB.prepare("UPDATE giveaways SET status = 'ended', token_hash = '', ended_at = ?2 WHERE id = ?1").bind(g.id, now),
+        env.DB.prepare(
+          "UPDATE manual_applications SET status = 'rejected', reject_reason = 'The giveaway ended.', screenshot = '', decided_at = ?2 WHERE giveaway_id = ?1 AND status = 'pending'"
+        ).bind(g.id, now),
+        setConfig(env, 'registration_gate', 'closed'),
+        setConfig(env, 'wheel_command', 'idle'),
+        setConfig(env, 'last_landed', ''),
+        setConfig(env, 'force_reset', 'true')
+      ]);
+      return json({ ok: true });
+    }
+
+    case 'purge_ended':
+      await env.DB.batch(purgeEndedStatements(env));
+      return json({ ok: true });
+
     case 'spin_winner': {
+      const g = await activeGiveaway(env);
+      if (!g) return noGiveaway();
       const pick = await env.DB.prepare(
-        "SELECT roblox_username, roblox_lower FROM qualified_entries WHERE status = 'alive' ORDER BY RANDOM() LIMIT 1"
-      ).first();
+        "SELECT roblox_username, roblox_lower FROM qualified_entries WHERE giveaway_id = ?1 AND status = 'alive' ORDER BY RANDOM() LIMIT 1"
+      ).bind(g.id).first();
       if (!pick) return json({ ok: false, error: 'No alive entries left to crown.' }, 409);
       await env.DB.batch([
-        env.DB.prepare("UPDATE qualified_entries SET status = 'winner' WHERE roblox_lower = ?1").bind(pick.roblox_lower),
+        env.DB.prepare("UPDATE qualified_entries SET status = 'winner' WHERE giveaway_id = ?1 AND roblox_lower = ?2").bind(
+          g.id, pick.roblox_lower
+        ),
         setConfig(env, 'wheel_command', 'spin_winner'),
         setConfig(env, 'last_landed', pick.roblox_username),
         setConfig(env, 'force_reset', 'false'),
@@ -232,7 +429,11 @@ async function handleAdminAction(request, env, url) {
     }
 
     case 'spin_elim': {
-      const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM qualified_entries WHERE status = 'alive'").first();
+      const g = await activeGiveaway(env);
+      if (!g) return noGiveaway();
+      const count = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM qualified_entries WHERE giveaway_id = ?1 AND status = 'alive'"
+      ).bind(g.id).first();
       if (!count || count.n < 1) return json({ ok: false, error: 'No alive entries to spin.' }, 409);
       await env.DB.batch([
         setConfig(env, 'wheel_command', 'spin_elim'),
@@ -252,12 +453,6 @@ async function handleAdminAction(request, env, url) {
       ]);
       return json({ ok: true });
 
-    case 'set_gate': {
-      const value = body.value === 'closed' ? 'closed' : 'open';
-      await setConfig(env, 'registration_gate', value).run();
-      return json({ ok: true, gate: value });
-    }
-
     case 'perm_ban': {
       const username = String(body.username || '').trim();
       if (!NAME_RE.test(username)) return json({ ok: false, error: 'Invalid username.' }, 400);
@@ -265,8 +460,9 @@ async function handleAdminAction(request, env, url) {
       await env.DB.batch([
         env.DB.prepare(
           'INSERT OR IGNORE INTO permanent_blacklist (username, username_lower, reason, banned_at) VALUES (?1, ?2, ?3, ?4)'
-        ).bind(username, lower, String(body.reason || 'admin ban').slice(0, 200), now),
-        env.DB.prepare('DELETE FROM qualified_entries WHERE roblox_lower = ?1 OR tiktok_lower = ?1').bind(lower)
+        ).bind(username, lower, cleanLine(body.reason || 'admin ban', 200), now),
+        env.DB.prepare('DELETE FROM qualified_entries WHERE roblox_lower = ?1 OR tiktok_lower = ?1').bind(lower),
+        env.DB.prepare("DELETE FROM manual_applications WHERE status = 'pending' AND (roblox_lower = ?1 OR tiktok_lower = ?1)").bind(lower)
       ]);
       return json({ ok: true });
     }
@@ -275,44 +471,44 @@ async function handleAdminAction(request, env, url) {
       const allowed = ['multiple entries', 'fake screenshot', 'other'];
       const reasonKey = allowed.includes(body.reason) ? body.reason : 'other';
       const reason = `manual: ${reasonKey}`;
-      const cooldown = now + COOLDOWN_MS;
       let existing = null;
-      if (Number.isInteger(Number(body.id)) && body.id !== undefined && body.id !== null && body.id !== '') {
+      let gid = 0;
+      let ru;
+      let rl;
+      if (body.id !== undefined && body.id !== null && body.id !== '' && Number.isInteger(Number(body.id))) {
         existing = await env.DB.prepare('SELECT * FROM qualified_entries WHERE id = ?1').bind(Number(body.id)).first();
         if (!existing) return json({ ok: false, error: 'That entry no longer exists.' }, 404);
+        gid = existing.giveaway_id;
+        ru = existing.roblox_username;
+        rl = existing.roblox_lower;
       } else {
-        const typed = String(body.roblox || '').trim();
-        if (!NAME_RE.test(typed)) return json({ ok: false, error: 'Enter a valid Roblox username.' }, 400);
-        existing = await env.DB.prepare('SELECT * FROM qualified_entries WHERE roblox_lower = ?1').bind(typed.toLowerCase()).first();
-        if (!existing) {
-          await env.DB.batch([
-            env.DB.prepare(
-              `INSERT INTO disqualified_entries (roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at, cooldown_until)
-               VALUES (?1, ?2, '(unknown)', '(unknown)', ?3, '', ?4, ?5)`
-            ).bind(typed, typed.toLowerCase(), reason, now, cooldown),
-            env.DB.prepare('INSERT INTO live_alerts (message, created_at) VALUES (?1, ?2)').bind(
-              `🚨 DISQUALIFIED: ${typed} (${reasonKey})`,
-              now
-            )
-          ]);
-          return json({ ok: true });
-        }
+        const g = await activeGiveaway(env);
+        if (!g) return noGiveaway();
+        gid = g.id;
+        ru = String(body.roblox || '').trim();
+        if (!NAME_RE.test(ru)) return json({ ok: false, error: 'Enter a valid Roblox username.' }, 400);
+        rl = ru.toLowerCase();
+        existing = await env.DB.prepare('SELECT * FROM qualified_entries WHERE giveaway_id = ?1 AND roblox_lower = ?2').bind(gid, rl).first();
       }
-      await env.DB.batch([
+      const tu = existing ? existing.tiktok_username : '(unknown)';
+      const tl = existing ? existing.tiktok_lower : '(unknown)';
+      const device = existing ? existing.device_hash || '' : '';
+      const statements = [
         env.DB.prepare(
-          `INSERT INTO disqualified_entries (roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at, cooldown_until)
+          `INSERT INTO disqualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
-        ).bind(existing.roblox_username, existing.roblox_lower, existing.tiktok_username, existing.tiktok_lower, reason, existing.device_hash || '', now, cooldown),
-        env.DB.prepare('DELETE FROM qualified_entries WHERE id = ?1').bind(existing.id),
-        env.DB.prepare('INSERT INTO live_alerts (message, created_at) VALUES (?1, ?2)').bind(
-          `🚨 DISQUALIFIED: ${existing.roblox_username} (${reasonKey})`,
-          now
-        )
-      ]);
+        ).bind(gid, ru, rl, tu, tl, reason, device, now),
+        env.DB.prepare("DELETE FROM manual_applications WHERE giveaway_id = ?1 AND status = 'pending' AND (roblox_lower = ?2 OR tiktok_lower = ?3)").bind(gid, rl, tl),
+        env.DB.prepare('INSERT INTO live_alerts (message, created_at) VALUES (?1, ?2)').bind(`🚨 DISQUALIFIED: ${ru} (${reasonKey})`, now)
+      ];
+      if (existing) statements.push(env.DB.prepare('DELETE FROM qualified_entries WHERE id = ?1').bind(existing.id));
+      await env.DB.batch(statements);
       return json({ ok: true });
     }
 
     case 'manual_add': {
+      const g = await activeGiveaway(env);
+      if (!g) return noGiveaway();
       const roblox = String(body.roblox || '').trim();
       const tiktok = String(body.tiktok || '').trim();
       if (!NAME_RE.test(roblox) || !NAME_RE.test(tiktok)) {
@@ -320,21 +516,10 @@ async function handleAdminAction(request, env, url) {
       }
       const rl = roblox.toLowerCase();
       const tl = tiktok.toLowerCase();
-      try {
-        const [, ins] = await env.DB.batch([
-          env.DB.prepare('DELETE FROM disqualified_entries WHERE roblox_lower = ?1 OR tiktok_lower = ?2').bind(rl, tl),
-          env.DB.prepare(
-            `INSERT INTO qualified_entries (roblox_username, roblox_lower, tiktok_username, tiktok_lower, level, device_hash, status, source, created_at)
-             SELECT ?1, ?2, ?3, ?4, 0, '', 'alive', 'manual', ?5
-             WHERE NOT EXISTS (SELECT 1 FROM qualified_entries WHERE roblox_lower = ?2 OR tiktok_lower = ?4)`
-          ).bind(roblox, rl, tiktok, tl, now)
-        ]);
-        if (ins.meta.changes !== 1) return json({ ok: false, error: 'That user is already on the wheel.' }, 409);
-      } catch (err) {
-        if (String(err && err.message).includes('UNIQUE')) {
-          return json({ ok: false, error: 'That user is already on the wheel.' }, 409);
-        }
-        throw err;
+      await env.DB.prepare('DELETE FROM disqualified_entries WHERE giveaway_id = ?1 AND (roblox_lower = ?2 OR tiktok_lower = ?3)')
+        .bind(g.id, rl, tl).run();
+      if (!(await insertEntry(env, g.id, roblox, rl, tiktok, tl, 0, '', 'manual', now))) {
+        return json({ ok: false, error: 'That user is already on the wheel.' }, 409);
       }
       return json({ ok: true });
     }
@@ -346,6 +531,71 @@ async function handleAdminAction(request, env, url) {
       return json({ ok: true });
     }
 
+    case 'get_screenshot': {
+      const id = Number(body.id);
+      if (!Number.isInteger(id)) return json({ ok: false, error: 'Invalid id.' }, 400);
+      const row = await env.DB.prepare("SELECT screenshot FROM manual_applications WHERE id = ?1 AND status = 'pending'").bind(id).first();
+      if (!row) return json({ ok: false, error: 'That application is no longer pending.' }, 404);
+      return json({ ok: true, screenshot: row.screenshot });
+    }
+
+    case 'app_accept': {
+      const id = Number(body.id);
+      if (!Number.isInteger(id)) return json({ ok: false, error: 'Invalid id.' }, 400);
+      const app = await env.DB.prepare("SELECT * FROM manual_applications WHERE id = ?1 AND status = 'pending'").bind(id).first();
+      if (!app) return json({ ok: false, error: 'That application is no longer pending.' }, 404);
+      const [banned, disq] = await env.DB.batch([
+        env.DB.prepare('SELECT 1 AS hit FROM permanent_blacklist WHERE username_lower IN (?1, ?2) LIMIT 1').bind(app.roblox_lower, app.tiktok_lower),
+        env.DB.prepare(
+          'SELECT 1 AS hit FROM disqualified_entries WHERE giveaway_id = ?1 AND (roblox_lower = ?2 OR tiktok_lower = ?3) LIMIT 1'
+        ).bind(app.giveaway_id, app.roblox_lower, app.tiktok_lower)
+      ]);
+      if (banned.results.length) return json({ ok: false, error: 'This player is permanently banned.' }, 409);
+      if (disq.results.length) return json({ ok: false, error: 'This player was disqualified from this giveaway.' }, 409);
+      const added = await insertEntry(
+        env, app.giveaway_id, app.roblox_username, app.roblox_lower, app.tiktok_username, app.tiktok_lower, 0, app.device_hash, 'manual-approved', now
+      );
+      if (!added) return json({ ok: false, error: 'Duplicate: that player is already on the wheel.' }, 409);
+      await env.DB.batch([
+        env.DB.prepare("UPDATE manual_applications SET status = 'accepted', screenshot = '', decided_at = ?2 WHERE id = ?1").bind(id, now),
+        env.DB.prepare(
+          "DELETE FROM manual_applications WHERE giveaway_id = ?1 AND status = 'pending' AND (roblox_lower = ?2 OR tiktok_lower = ?3)"
+        ).bind(app.giveaway_id, app.roblox_lower, app.tiktok_lower)
+      ]);
+      return json({ ok: true });
+    }
+
+    case 'app_reject': {
+      const id = Number(body.id);
+      if (!Number.isInteger(id)) return json({ ok: false, error: 'Invalid id.' }, 400);
+      const app = await env.DB.prepare("SELECT giveaway_id, roblox_lower, tiktok_lower FROM manual_applications WHERE id = ?1 AND status = 'pending'").bind(id).first();
+      if (!app) return json({ ok: false, error: 'That application is no longer pending.' }, 404);
+      await env.DB.prepare(
+        "UPDATE manual_applications SET status = 'rejected', reject_reason = ?2, screenshot = '', decided_at = ?3 WHERE giveaway_id = ?1 AND status = 'pending' AND (roblox_lower = ?4 OR tiktok_lower = ?5)"
+      ).bind(app.giveaway_id, cleanLine(body.reason, 150), now, app.roblox_lower, app.tiktok_lower).run();
+      return json({ ok: true });
+    }
+
+    case 'app_remove_username': {
+      const username = String(body.username || '').trim();
+      if (!NAME_RE.test(username)) return json({ ok: false, error: 'Invalid username.' }, 400);
+      const lower = username.toLowerCase();
+      const r = await env.DB.prepare("DELETE FROM manual_applications WHERE status = 'pending' AND (roblox_lower = ?1 OR tiktok_lower = ?1)").bind(lower).run();
+      return json({ ok: true, removed: r.meta.changes });
+    }
+
+    case 'app_remove_device': {
+      const device = String(body.device_hash || '');
+      if (!/^[a-f0-9]{8,64}$/.test(device)) return json({ ok: false, error: 'Invalid device tag.' }, 400);
+      const r = await env.DB.prepare("DELETE FROM manual_applications WHERE status = 'pending' AND device_hash = ?1").bind(device).run();
+      return json({ ok: true, removed: r.meta.changes });
+    }
+
+    case 'app_clear_all': {
+      const r = await env.DB.prepare("DELETE FROM manual_applications WHERE status = 'pending'").run();
+      return json({ ok: true, removed: r.meta.changes });
+    }
+
     case 'clear_alerts':
       await env.DB.prepare('DELETE FROM live_alerts').run();
       return json({ ok: true });
@@ -354,7 +604,10 @@ async function handleAdminAction(request, env, url) {
       await env.DB.batch([
         env.DB.prepare('DELETE FROM qualified_entries'),
         env.DB.prepare('DELETE FROM disqualified_entries'),
+        env.DB.prepare('DELETE FROM manual_applications'),
+        env.DB.prepare('DELETE FROM giveaways'),
         env.DB.prepare('DELETE FROM live_alerts'),
+        setConfig(env, 'registration_gate', 'closed'),
         setConfig(env, 'wheel_command', 'idle'),
         setConfig(env, 'last_landed', ''),
         setConfig(env, 'force_reset', 'true'),
@@ -372,6 +625,9 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === '/api/submit') return await handleSubmit(request, env);
+      if (url.pathname === '/api/registration') return await handleRegistration(request, env);
+      if (url.pathname === '/api/apply') return await handleApply(request, env);
+      if (url.pathname === '/api/apply-status') return await handleApplyStatus(request, env, url);
       if (url.pathname === '/api/public-list') return await handlePublicList(request, env);
       if (url.pathname === '/api/admin-action') return await handleAdminAction(request, env, url);
       if (url.pathname.startsWith('/api/')) return json({ ok: false, error: 'Not found.' }, 404);
