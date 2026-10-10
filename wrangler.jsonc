@@ -1,0 +1,17 @@
+{
+  "name": "wheel-spin",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "PLACEHOLDER_DATABASE_NAME",
+      "database_id": "PLACEHOLDER_D1_DATABASE_ID"
+    }
+  ]
+}
