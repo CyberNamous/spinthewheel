@@ -59,6 +59,22 @@ td.act{display:flex;gap:6px}
 #modal form{background:var(--panel);border:1px solid var(--neon);border-radius:14px;padding:26px;width:100%;max-width:380px;display:grid;gap:14px;box-shadow:0 0 50px rgba(255,0,127,.3)}
 #modal h2{color:var(--pink2)}
 #modalErr{color:var(--red);min-height:1.2em;font-size:.9rem}
+button.ok{background:#1f8f55}
+.wrap{display:flex;flex-wrap:wrap;gap:6px}
+.tokenbox{margin-top:14px;border:1.5px dashed var(--pink);border-radius:12px;padding:14px;display:grid;gap:8px;background:#12121a}
+.tokenbox code{font-size:1.4rem;font-weight:900;color:var(--pink);letter-spacing:.04em;overflow-wrap:anywhere}
+.tokenbox .link{color:var(--muted);font-size:.9rem;overflow-wrap:anywhere}
+.apps{border-color:var(--pink)}
+.apps h2{color:var(--pink2)}
+.appgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:12px}
+.appcard{background:#12121a;border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:8px;align-content:start}
+.appcard.isdup{border-color:var(--red)}
+.apphead{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:1.05rem}
+.badge{border-radius:99px;padding:2px 9px;font-size:.75rem;font-weight:800;background:#2a2a32}
+.badge.warn{background:rgba(255,105,180,.2);color:var(--pink)}
+.badge.bad{background:rgba(255,77,94,.2);color:var(--red)}
+.shotimg{width:100%;min-height:80px;max-height:260px;object-fit:contain;border-radius:8px;background:#0f0f11;border:1px solid var(--line)}
+.note{color:var(--text);font-style:italic}
 #toast{position:fixed;right:20px;bottom:20px;background:var(--panel);border:1px solid var(--pink);border-radius:10px;padding:12px 16px;font-weight:700;max-width:360px;z-index:20}
 #toast.err{border-color:var(--red);color:var(--red)}
 @media (max-width:900px){.twin,.boards{grid-template-columns:1fr}main{padding:14px}}
@@ -78,7 +94,7 @@ td.act{display:flex;gap:6px}
 <div id="rsn" role="dialog" aria-modal="true" aria-labelledby="rsnTitle" hidden>
   <div class="rbox">
     <h2 id="rsnTitle">Disqualify <span id="rsnName"></span></h2>
-    <div class="meta">Pick a reason. They leave the wheel and get a 15-day cooldown.</div>
+    <div class="meta">Pick a reason. They leave the wheel and are blocked from this giveaway only.</div>
     <button type="button" data-r="multiple entries">Multiple entries</button>
     <button type="button" data-r="fake screenshot">Fake screenshot</button>
     <button type="button" data-r="other">Other</button>
@@ -91,11 +107,26 @@ td.act{display:flex;gap:6px}
     <h1>Wheel Control Panel</h1>
     <div class="bar">
       <span class="meta" id="cmdInfo"></span>
-      <button class="ghost" id="gateBtn" type="button"></button>
       <button class="ghost" id="clearAlerts" type="button">Clear banner</button>
     </div>
   </header>
   <main>
+    <section class="card">
+      <h2>🎁 Giveaway</h2>
+      <div class="meta" id="gwInfo">Loading...</div>
+      <div class="bar" style="margin-top:12px">
+        <button class="ok" id="gwOpen" type="button">Open giveaway (24h)</button>
+        <button class="ghost" id="gwClose" type="button">Close registration</button>
+        <button class="ghost" id="gwEnd" type="button">End giveaway</button>
+        <button class="ghost" id="gwPurge" type="button" hidden>Delete ended data</button>
+      </div>
+      <div class="tokenbox">
+        <div class="meta">Sign-up link (anyone can use it while registration is open)</div>
+        <div class="link" id="gwLink"></div>
+        <div class="bar"><button class="sm" type="button" id="copyLink">Copy link</button></div>
+      </div>
+    </section>
+
     <section class="twin">
       <div class="card win">
         <h2>🏆 Declare Winner Mode</h2>
@@ -111,7 +142,7 @@ td.act{display:flex;gap:6px}
 
     <section class="card">
       <h2>Manual override</h2>
-      <p class="meta" style="margin:0 0 12px">Add a player without a screenshot. This also lifts any cooldown on those names.</p>
+      <p class="meta" style="margin:0 0 12px">Add a player without a screenshot. This also lifts any block on those names for this giveaway.</p>
       <form class="bar" id="manualForm">
         <input type="text" id="mRoblox" placeholder="Roblox username" maxlength="20" required>
         <input type="text" id="mTiktok" placeholder="TikTok username" maxlength="20" required>
@@ -129,6 +160,12 @@ td.act{display:flex;gap:6px}
         </select>
         <button class="danger" type="submit">Disqualify</button>
       </form>
+    </section>
+
+    <section class="board apps">
+      <h2><span>📝 Manual applications</span><span class="meta" id="aCount"></span></h2>
+      <div class="bar"><span class="meta">Accept puts the player on the wheel. Reject just removes the request.</span><span style="flex:1"></span><button class="ghost sm" id="appsClear" type="button">Clear all pending</button></div>
+      <div id="aBox"></div>
     </section>
 
     <section class="boards">
@@ -268,26 +305,114 @@ td.act{display:flex;gap:6px}
       rows.forEach(function (r) {
         body.append(h('tr', {},
           h('td', {}, r.roblox_username), h('td', {}, r.tiktok_username), h('td', {}, r.reason),
-          h('td', {}, when(r.cooldown_until)), h('td', { class: 'act' }, banBtn(r.roblox_username))));
+          h('td', {}, when(r.disqualified_at)), h('td', { class: 'act' }, banBtn(r.roblox_username))));
       });
       box.append(h('table', {},
-        h('thead', {}, h('tr', {}, ['Roblox', 'TikTok', 'Reason', 'Cooldown until', ''].map(function (t) { return h('th', {}, t); }))), body));
+        h('thead', {}, h('tr', {}, ['Roblox', 'TikTok', 'Reason', 'When', ''].map(function (t) { return h('th', {}, t); }))), body));
     }
     var chips = $('banChips'); chips.textContent = '';
     if (!bans.length) chips.append(h('span', {}, 'none'));
     bans.forEach(function (b) { chips.append(h('span', {}, b.username)); });
   }
 
+  var shotCache = {}, shotLoading = {}, shotImgs = {}, appsSig = '';
+
+  function loadShot(id, img) {
+    if (shotCache[id]) { img.src = shotCache[id]; return; }
+    if (shotLoading[id]) return;
+    shotLoading[id] = true;
+    api('get_screenshot', { id: id }).then(function (d) {
+      if (d.ok && d.screenshot) {
+        shotCache[id] = d.screenshot;
+        if (shotImgs[id]) shotImgs[id].src = d.screenshot;
+      }
+    }).catch(function () {}).then(function () { delete shotLoading[id]; });
+  }
+
+  function renderApps(apps) {
+    $('aCount').textContent = apps.length + ' pending';
+    var sig = apps.map(function (a) { return a.id + ':' + a.dup; }).join(',');
+    if (sig === appsSig) return;
+    appsSig = sig;
+    var live = {};
+    apps.forEach(function (a) { live[a.id] = 1; });
+    Object.keys(shotCache).forEach(function (k) { if (!live[k]) delete shotCache[k]; });
+    var box = $('aBox'); box.textContent = '';
+    if (!apps.length) { box.append(h('div', { class: 'empty' }, 'No applications waiting.')); return; }
+    var groups = {}, order = [];
+    apps.forEach(function (a) {
+      var k = a.roblox_username.toLowerCase();
+      if (!groups[k]) { groups[k] = []; order.push(k); }
+      groups[k].push(a);
+    });
+    var grid = h('div', { class: 'appgrid' });
+    order.forEach(function (k) {
+      var list = groups[k], a = list[list.length - 1];
+      var dup = list.some(function (x) { return x.dup; });
+      var img = h('img', { class: 'shotimg', alt: 'Screenshot from ' + a.roblox_username });
+      shotImgs[a.id] = img;
+      loadShot(a.id, img);
+      grid.append(h('div', { class: 'appcard' + (dup ? ' isdup' : '') },
+        h('div', { class: 'apphead' }, h('b', {}, a.roblox_username),
+          list.length > 1 ? h('span', { class: 'badge warn' }, '×' + list.length) : '',
+          dup ? h('span', { class: 'badge bad' }, 'DUPLICATE') : ''),
+        h('div', { class: 'meta' }, 'TikTok: ' + a.tiktok_username + ' • device ' + (a.device_hash ? a.device_hash.slice(0, 6) : '—') + ' • ' + when(a.created_at)),
+        img,
+        h('div', { class: 'meta' }, 'Scan said: ' + (a.reason || '—')),
+        a.note ? h('div', { class: 'note' }, '“' + a.note + '”') : '',
+        h('div', { class: 'wrap' },
+          h('button', { class: 'sm ok', type: 'button', onclick: function () { run('app_accept', { id: a.id }, a.roblox_username + ' accepted.'); } }, '✅ Accept'),
+          h('button', { class: 'sm danger', type: 'button', onclick: function () {
+            var why = prompt('Reason for rejecting (optional, the player will see it):', '');
+            if (why === null) return;
+            run('app_reject', { id: a.id, reason: why }, a.roblox_username + ' rejected.');
+          } }, '❌ Reject'),
+          h('button', { class: 'sm ghost', type: 'button', onclick: function () {
+            if (confirm('Remove every pending application from ' + a.roblox_username + '? Other players are not affected.')) {
+              run('app_remove_username', { username: a.roblox_username }, 'Removed their applications.');
+            }
+          } }, '🗑 All from this username'),
+          a.device_hash ? h('button', { class: 'sm ghost', type: 'button', onclick: function () {
+            if (confirm('Remove every pending application from this device?')) {
+              run('app_remove_device', { device_hash: a.device_hash }, 'Removed applications from that device.');
+            }
+          } }, '📱 All from this device') : '')));
+    });
+    box.append(grid);
+  }
+
+  function renderGiveaway(g, now) {
+    var info;
+    if (!g) info = 'No giveaway yet. Tap "Open giveaway" to start one.';
+    else if (g.status === 'open') {
+      var mins = Math.max(0, Math.round((g.expires_at - now) / 60000));
+      info = 'Registration is OPEN until ' + when(g.expires_at) + ' (' + Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm left).';
+    } else if (g.status === 'closed') info = 'Registration is closed. The wheel is live for this giveaway.';
+    else info = 'This giveaway has ended. Its entries stay here for review until you open the next one.';
+    $('gwInfo').textContent = info;
+    var active = g && g.status !== 'ended';
+    $('gwOpen').disabled = !!active;
+    $('gwClose').disabled = !(g && g.status === 'open');
+    $('gwEnd').disabled = !active;
+    $('gwPurge').hidden = !(g && g.status === 'ended');
+    $('gwLink').textContent = location.origin + '/';
+  }
+
+  function copyText(text, label) {
+    var done = function () { toast(label + ' copied.'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () { toast('Copy failed. Select it manually.', true); });
+    else toast('Copy is not available here. Select it manually.', true);
+  }
+
   async function refresh() {
     var d;
     try { d = await api('get_state'); } catch (_) { return; }
     if (!d.ok) return;
+    renderGiveaway(d.giveaway, d.now);
+    renderApps(d.applications || []);
     renderQualified(d.qualified);
     renderDisq(d.disqualified, d.blacklist);
     var c = d.config || {};
-    var open = c.registration_gate === 'open';
-    $('gateBtn').textContent = open ? 'Registration: open (tap to close)' : 'Registration: closed (tap to open)';
-    $('gateBtn').dataset.next = open ? 'closed' : 'open';
     $('cmdInfo').textContent = 'Command: ' + (c.wheel_command || 'idle') + (c.last_landed ? ' • Last landed: ' + c.last_landed : '');
   }
 
@@ -329,9 +454,25 @@ td.act{display:flex;gap:6px}
     if (confirm('Reset the wheel? All entries come back alive and any winner is cleared.')) run('reset_wheel', {}, 'Wheel reset.');
   });
   $('wipe').addEventListener('click', function () {
-    if (confirm('Wipe all entries, cheater logs and alerts? Permanent bans are kept. This cannot be undone.')) run('wipe_d1', {}, 'Tables wiped.');
+    if (confirm('Wipe all giveaways, entries, applications, cheater logs and alerts? Permanent bans are kept. This cannot be undone.')) run('wipe_d1', {}, 'Tables wiped.');
   });
-  $('gateBtn').addEventListener('click', function () { run('set_gate', { value: this.dataset.next }, 'Registration updated.'); });
+  $('gwOpen').addEventListener('click', async function () {
+    if (!confirm('Open a new giveaway? Registration stays open for 24 hours. You can close it earlier.')) return;
+    await run('open_giveaway', {}, 'Giveaway opened.');
+  });
+  $('gwClose').addEventListener('click', function () {
+    if (confirm('Close registration now? Nobody can sign up after this. The wheel keeps running.')) run('close_registration', {}, 'Registration closed.');
+  });
+  $('gwEnd').addEventListener('click', function () {
+    if (confirm('End this giveaway? Registration closes, the stream wheel clears and pending applications are rejected. Entries stay here until you open the next giveaway.')) run('end_giveaway', {}, 'Giveaway ended.');
+  });
+  $('gwPurge').addEventListener('click', function () {
+    if (confirm('Delete the ended giveaway data now? This cannot be undone.')) run('purge_ended', {}, 'Ended giveaway data deleted.');
+  });
+  $('copyLink').addEventListener('click', function () { copyText($('gwLink').textContent, 'Link'); });
+  $('appsClear').addEventListener('click', function () {
+    if (confirm('Clear ALL pending applications? Use the per-username button to remove just one person.')) run('app_clear_all', {}, 'Pending applications cleared.');
+  });
   $('clearAlerts').addEventListener('click', function () { run('clear_alerts', {}, 'Banner cleared.'); });
   $('manualForm').addEventListener('submit', async function (e) {
     e.preventDefault();
