@@ -10,8 +10,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "PLACEHOLDER_DATABASE_NAME",
-      "database_id": "PLACEHOLDER_D1_DATABASE_ID"
+      "database_name": "wheel-db",
+      "database_id": "2d6df353-fa05-4f85-a4b6-ba6c91fc83c4"
     }
   ]
 }
