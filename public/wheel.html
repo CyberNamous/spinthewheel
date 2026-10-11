@@ -23,6 +23,24 @@ canvas{display:block}
 #result b{color:var(--pink)}
 #sound{position:absolute;top:0;left:0;background:var(--panel);color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;font-size:.85rem;cursor:pointer}
 #sound.done{display:none}
+#hostbar{flex:none;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;padding:10px 16px;background:var(--panel);border-top:1px solid var(--line)}
+#hostbar[hidden],#hostBtns[hidden],#hostModal[hidden]{display:none}
+#hostBtns{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;align-items:center}
+#hostbar button,#hostModal button{font:inherit;font-weight:800;border-radius:10px;border:1px solid var(--line);background:#22222a;color:#fff;padding:10px 16px;cursor:pointer}
+#hostbar button.main,#hostModal button.main{background:linear-gradient(135deg,var(--neon),var(--pink2));border:0}
+#hostbar button.alt{background:linear-gradient(135deg,#8a0a4f,var(--neon));border:0}
+#hostbar button:disabled{opacity:.4;cursor:not-allowed}
+#hostMsg{color:var(--muted);font-size:.9rem}
+#hostMsg.err{color:#ff4d6d}
+#hostModal{position:fixed;inset:0;background:rgba(15,15,17,.92);display:flex;align-items:center;justify-content:center;z-index:30;padding:20px}
+#hostModal form{background:var(--panel);border:1px solid var(--neon);border-radius:14px;padding:24px;width:100%;max-width:360px;display:grid;gap:12px}
+#hostModal h3{margin:0;color:var(--pink2)}
+#hostModal input{background:#0f0f11;border:1.5px solid var(--line);border-radius:10px;color:#fff;font:inherit;padding:12px}
+#hostErr{color:#ff4d6d;min-height:1.1em;font-size:.9rem}
+.embed #right,.embed #sound{display:none}
+.embed #stage{grid-template-columns:1fr;padding:8px;gap:8px}
+.embed #entryPill{top:4px;right:4px;padding:5px 10px}
+.embed #result{bottom:4px;padding:6px 14px}
 #entryPill{position:absolute;top:0;right:0;background:rgba(22,22,26,.92);border:1.5px solid var(--neon);border-radius:14px;padding:8px 16px;text-align:right;box-shadow:0 0 24px rgba(255,0,127,.35)}
 #pillMain{display:block;font-size:clamp(1rem,2vw,1.6rem);font-weight:900;color:#fff}
 #pillReg{display:block;font-size:.8rem;font-weight:700;color:var(--muted)}
@@ -61,6 +79,27 @@ canvas{display:block}
     <ul id="log"></ul>
   </aside>
 </div>
+<div id="hostbar" hidden>
+  <button id="hostUnlock" type="button">🔒 Host controls</button>
+  <div id="hostBtns" hidden>
+    <button type="button" class="main" data-a="spin_winner">🏆 Declare Winner</button>
+    <button type="button" class="alt" data-a="spin_elim">❌ Matirang Matibay</button>
+    <button type="button" data-a="reset_wheel">🔄 Reset Wheel</button>
+    <button type="button" data-a="open_giveaway">▶ Open giveaway</button>
+    <button type="button" data-a="close_registration">⏸ Close registration</button>
+    <button type="button" data-a="end_giveaway">⏹ End giveaway</button>
+    <button type="button" id="hostLock">Lock</button>
+  </div>
+  <span id="hostMsg" aria-live="polite"></span>
+</div>
+<div id="hostModal" role="dialog" aria-modal="true" aria-labelledby="hostTitle" hidden>
+  <form id="hostForm">
+    <h3 id="hostTitle">Host sign in</h3>
+    <input type="password" id="hostToken" autocomplete="off" placeholder="Stream token" required>
+    <div id="hostErr" aria-live="polite"></div>
+    <div style="display:flex;gap:10px"><button type="submit" class="main">Unlock</button><button type="button" id="hostCancel">Cancel</button></div>
+  </form>
+</div>
 <script>
 (function () {
   var TAU = Math.PI * 2;
@@ -76,9 +115,13 @@ canvas{display:block}
   var rolling = new Audio('audio/rolling.mp3');
   var victory = new Audio('audio/victory.mp3');
   rolling.loop = true; rolling.preload = 'auto'; victory.preload = 'auto';
+  if (/[?&]embed=1/.test(location.search)) { rolling.muted = true; victory.muted = true; }
 
   var entries = [], segs = [], eliminated = new Set();
   var registration = 'none', lastTotal = null;
+  var baseSpin = null, finishedSpin = -1;
+  var EMBED = /[?&]embed=1/.test(location.search);
+  if (EMBED) { document.documentElement.classList.add('embed'); }
   var pill = document.getElementById('entryPill');
   var pillMain = document.getElementById('pillMain');
   var pillReg = document.getElementById('pillReg');
@@ -95,6 +138,7 @@ canvas{display:block}
       pill.classList.add('bump');
     }
     lastTotal = total;
+    updateHost();
   }
   var theta = -Math.PI / 2, flick = 0, size = 600;
   var spinning = false, busy = false, lastSpin = null, lastSig = '';
@@ -195,13 +239,13 @@ canvas{display:block}
   }
   function hideResult() { resultEl.classList.remove('on'); }
 
-  function startSpin(mode, target) {
+  function startSpin(mode, target, spinId) {
     hideResult();
-    rebuildSegs(mode === 'spin_winner' ? target : null);
+    rebuildSegs(target || null);
     if (!segs.length) return;
     spinning = true; busy = true;
     var n = segs.length, a = TAU / n;
-    var j = mode === 'spin_winner' ? segs.findIndex(function (e) { return e.name === target; }) : Math.floor(rand() * n);
+    var j = target ? segs.findIndex(function (e) { return e.name === target; }) : Math.floor(rand() * n);
     if (j < 0) j = Math.floor(rand() * n);
     var jitter = (rand() - 0.5) * a * 0.6;
     var want = mod(-Math.PI / 2 - (j + 0.5) * a - jitter, TAU);
@@ -226,13 +270,14 @@ canvas{display:block}
       if (t < T) { requestAnimationFrame(frame); return; }
       theta = th0 + D; flick = 0; draw();
       rolling.pause();
-      land(mode, segs[j].name);
+      land(mode, segs[j].name, spinId);
     }
     requestAnimationFrame(frame);
   }
 
-  function land(mode, name) {
+  function land(mode, name, spinId) {
     spinning = false;
+    finishedSpin = spinId;
     if (mode === 'spin_winner') {
       victory.currentTime = 0; victory.volume = 1;
       var p = victory.play(); if (p && p.catch) p.catch(function () {});
@@ -257,26 +302,31 @@ canvas{display:block}
     }
   }
 
+  var lastPoll = 0;
   async function poll() {
+    lastPoll = Date.now();
     try {
       var res = await fetch('/api/public-list', { cache: 'no-store' });
       if (!res.ok) return;
       var d = await res.json();
       if (!d.ok) return;
-      if (d.force_reset && eliminated.size) { eliminated.clear(); lastSig = ''; hideResult(); }
       if (d.force_reset) hideResult();
+      if (lastSpin === null) { lastSpin = d.spin_id; baseSpin = d.spin_id; }
+      var out = new Set(d.out || []);
+      if (d.command === 'spin_elim' && d.target && (d.spin_id <= baseSpin || d.spin_id === finishedSpin)) out.add(d.target);
+      eliminated = out;
       entries = d.entries || [];
       registration = d.registration || 'none';
       applyAlerts(d.alerts);
       renderLog();
       updatePill();
-      if (lastSpin === null) lastSpin = d.spin_id;
       if (!busy) { rebuildSegs(null); draw(); }
       if (!busy && d.spin_id > lastSpin && (d.command === 'spin_winner' || d.command === 'spin_elim')) {
         lastSpin = d.spin_id;
-        startSpin(d.command, d.target);
+        startSpin(d.command, d.target, d.spin_id);
       } else if (d.spin_id < lastSpin) {
         lastSpin = d.spin_id;
+        baseSpin = d.spin_id;
       }
     } catch (_) {}
   }
@@ -291,10 +341,124 @@ canvas{display:block}
     this.classList.add('done');
   });
 
+  var HOST = /[?&]host=1/.test(location.search);
+  var hostToken = '';
+  var hostBar = document.getElementById('hostbar');
+  var hostBtns = document.getElementById('hostBtns');
+  var hostMsgEl = document.getElementById('hostMsg');
+  var hostModal = document.getElementById('hostModal');
+  var CONFIRMS = {
+    spin_winner: 'Crown a permanent winner now?',
+    reset_wheel: 'Reset the wheel? Everyone comes back and any winner is cleared.',
+    open_giveaway: 'Open a new giveaway? Registration stays open for 24 hours.',
+    close_registration: 'Close registration now? Nobody new can sign up.',
+    end_giveaway: 'End this giveaway? Registration closes and the wheel clears.'
+  };
+
+  function hostStore(v) {
+    try { if (v) sessionStorage.setItem('wheel_host', v); else sessionStorage.removeItem('wheel_host'); } catch (_) {}
+  }
+  function hostLoad() {
+    try { return sessionStorage.getItem('wheel_host') || ''; } catch (_) { return ''; }
+  }
+  function say(text, err) {
+    hostMsgEl.textContent = text || '';
+    hostMsgEl.className = err ? 'err' : '';
+  }
+  function setDis(a, v) {
+    var b = hostBtns.querySelector('[data-a="' + a + '"]');
+    if (b) b.disabled = v;
+  }
+  function hostUi() {
+    var unlocked = !!hostToken;
+    document.getElementById('hostUnlock').hidden = unlocked;
+    hostBtns.hidden = !unlocked;
+    updateHost();
+  }
+  function updateHost() {
+    if (!HOST || !hostToken) return;
+    var has = registration !== 'none';
+    var can = has && !busy && entries.length > 0;
+    setDis('spin_winner', !can);
+    setDis('spin_elim', !can);
+    setDis('reset_wheel', !has);
+    setDis('open_giveaway', has);
+    setDis('close_registration', registration !== 'open');
+    setDis('end_giveaway', !has);
+  }
+  function openModal(msg) {
+    document.getElementById('hostErr').textContent = msg || '';
+    document.getElementById('hostToken').value = '';
+    hostModal.hidden = false;
+    document.getElementById('hostToken').focus();
+  }
+  async function hostCall(action) {
+    var res = await fetch('/api/stream-action', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'Authorization': 'Bearer ' + hostToken },
+      body: JSON.stringify({ action: action })
+    });
+    var d = {};
+    try { d = await res.json(); } catch (_) {}
+    if (res.status === 401) {
+      hostToken = ''; hostStore(''); hostUi();
+      openModal('That token was not accepted.');
+      throw new Error('Unauthorized');
+    }
+    return d;
+  }
+
+  if (HOST) {
+    hostBar.hidden = false;
+    hostToken = hostLoad();
+    hostUi();
+    document.getElementById('hostUnlock').addEventListener('click', function () { openModal(''); });
+    document.getElementById('hostCancel').addEventListener('click', function () { hostModal.hidden = true; });
+    document.getElementById('hostLock').addEventListener('click', function () {
+      hostToken = ''; hostStore(''); say(''); hostUi();
+    });
+    document.getElementById('hostForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var candidate = document.getElementById('hostToken').value.trim();
+      hostToken = candidate;
+      document.getElementById('hostErr').textContent = 'Checking...';
+      try {
+        var d = await hostCall('verify');
+        if (d.ok) { hostStore(candidate); hostModal.hidden = true; say(''); hostUi(); }
+        else document.getElementById('hostErr').textContent = 'That token was not accepted.';
+      } catch (_) {}
+    });
+    hostBtns.addEventListener('click', async function (e) {
+      var b = e.target.closest('button[data-a]');
+      if (!b || b.disabled) return;
+      var action = b.getAttribute('data-a');
+      if (CONFIRMS[action] && !window.confirm(CONFIRMS[action])) return;
+      var all = hostBtns.querySelectorAll('button');
+      all.forEach(function (x) { x.disabled = true; });
+      say('Working...');
+      try {
+        var d = await hostCall(action);
+        if (d.ok) { say('Done.'); poll(); }
+        else say(d.error || 'That did not work. Try again.', true);
+      } catch (err) {
+        if (err.message !== 'Unauthorized') say('Network problem. Try again.', true);
+      } finally {
+        all.forEach(function (x) { x.disabled = false; });
+        updateHost();
+        setTimeout(function () { if (hostMsgEl.textContent === 'Done.') say(''); }, 3000);
+      }
+    });
+  }
+
   window.addEventListener('resize', resize);
   resize();
   poll();
-  setInterval(poll, 2000);
+  setInterval(function () {
+    if (document.hidden && Date.now() - lastPoll < 15000) return;
+    if (EMBED && Date.now() - lastPoll < 2800) return;
+    poll();
+  }, 2000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
 })();
 </script>
 </body>
