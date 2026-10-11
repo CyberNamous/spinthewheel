@@ -297,7 +297,7 @@ async function handleRegistration(request, env) {
 async function handlePublicList(request, env) {
   if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed.' }, 405);
   const now = Date.now();
-  const [entries, alerts, cfg] = await env.DB.batch([
+  const [entries, alerts, cfg, live] = await env.DB.batch([
     env.DB.prepare(
       "SELECT roblox_username AS name, status FROM qualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status != 'ended') ORDER BY id ASC"
     ),
@@ -306,12 +306,16 @@ async function handlePublicList(request, env) {
     ),
     env.DB.prepare(
       "SELECT key, value FROM system_config WHERE key IN ('wheel_command','force_reset','last_landed','spin_id','registration_gate')"
-    )
+    ),
+    env.DB.prepare("SELECT status, expires_at FROM giveaways WHERE status != 'ended' ORDER BY id DESC LIMIT 1")
   ]);
   const c = {};
   for (const row of cfg.results) c[row.key] = row.value;
+  const g = live.results[0];
+  const registration = !g ? 'none' : g.status === 'open' && g.expires_at > now && c.registration_gate === 'open' ? 'open' : 'closed';
   return json({
     ok: true,
+    registration,
     entries: entries.results,
     alerts: alerts.results,
     command: c.wheel_command || 'idle',
