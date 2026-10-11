@@ -629,7 +629,14 @@ export default {
       if (url.pathname === '/api/apply') return await handleApply(request, env);
       if (url.pathname === '/api/apply-status') return await handleApplyStatus(request, env, url);
       if (url.pathname === '/api/public-list') return await handlePublicList(request, env);
-      if (url.pathname === '/api/admin-action') return await handleAdminAction(request, env, url);
+      if (url.pathname === '/api/admin-action') {
+        try {
+          return await handleAdminAction(request, env, url);
+        } catch (err) {
+          console.error('Admin action error:', err && err.stack ? err.stack : err);
+          return json({ ok: false, error: `Database error: ${String((err && err.message) || err).slice(0, 220)}` }, 500);
+        }
+      }
       if (url.pathname.startsWith('/api/')) return json({ ok: false, error: 'Not found.' }, 404);
       return await env.ASSETS.fetch(request);
     } catch (err) {
