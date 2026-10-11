@@ -42,7 +42,9 @@ input.invalid{border-color:var(--bad)}
 textarea{width:100%;background:#0f0f11;border:1.5px solid var(--line);border-radius:10px;color:var(--text);font:inherit;padding:10px 12px;resize:vertical}
 textarea:focus{outline:none;border-color:var(--neon);box-shadow:0 0 0 3px rgba(255,0,127,.25)}
 #manual{background:#12121a;border:1px solid var(--pink2);border-radius:10px;padding:14px;display:grid;gap:10px}
-#manual[hidden],#appStatus[hidden],#closedNote[hidden]{display:none}
+#manual[hidden],#appStatus[hidden],#closedNote[hidden],#wheelNote[hidden]{display:none}
+#wheelNote{border-radius:10px;padding:14px;line-height:1.45;font-weight:700;background:rgba(255,0,127,.12);border:1px solid var(--neon);color:var(--text)}
+#wheelNote a{color:var(--pink)}
 #closedNote{background:rgba(255,77,109,.1);border:1px solid var(--bad);color:var(--bad);border-radius:10px;padding:14px;margin-bottom:16px;font-weight:700;line-height:1.45}
 #manual p{margin:0;line-height:1.45}
 #manual .small{color:var(--muted);font-size:.85rem}
@@ -102,6 +104,7 @@ textarea:focus{outline:none;border-color:var(--neon);box-shadow:0 0 0 3px rgba(2
       <p class="small">Your screenshot is only uploaded if you tap this button, and it is deleted once the host decides.</p>
     </div>
     <div id="appStatus" role="status" aria-live="polite" hidden></div>
+    <div id="wheelNote" role="status" aria-live="polite" hidden>Taking you to the wheel in <span id="wheelSecs">3</span>s. <a href="/wheel">Go now</a></div>
     <button type="submit" id="go">Scan and enter the wheel</button>
   </form>
 </main>
@@ -307,6 +310,19 @@ textarea:focus{outline:none;border-color:var(--neon);box-shadow:0 0 0 3px rgba(2
     throw new Error('That screenshot is too large to send. Try a smaller one.');
   }
 
+  var wheelTimer = null;
+  function goToWheel() {
+    if (wheelTimer) return;
+    var n = 3;
+    $('wheelSecs').textContent = String(n);
+    $('wheelNote').hidden = false;
+    wheelTimer = setInterval(function () {
+      n--;
+      if (n <= 0) { clearInterval(wheelTimer); window.location.href = '/wheel'; return; }
+      $('wheelSecs').textContent = String(n);
+    }, 1000);
+  }
+
   function showAppStatus(text, bad) {
     var box = $('appStatus');
     box.hidden = false;
@@ -325,7 +341,7 @@ textarea:focus{outline:none;border-color:var(--neon);box-shadow:0 0 0 3px rgba(2
         var out = await res.json();
         if (!out.ok || out.status === 'pending') return;
         clearInterval(timer);
-        if (out.status === 'accepted') showAppStatus("You're approved and on the wheel. Watch the stream.", false);
+        if (out.status === 'accepted') { showAppStatus("You're approved and on the wheel.", false); goToWheel(); }
         else if (out.status === 'rejected') showAppStatus('The host did not approve this entry.' + (out.reason ? ' Reason: ' + out.reason : ''), true);
         else showAppStatus('Your application was removed by the host.', true);
       } catch (_) {}
@@ -433,6 +449,7 @@ textarea:focus{outline:none;border-color:var(--neon);box-shadow:0 0 0 3px rgba(2
       setProgress(100, 'Done.');
       showResult(true, out.message || 'You are on the wheel.');
       form.reset();
+      goToWheel();
     } catch (err) {
       progressBox.hidden = true;
       var text = err && err.message ? err.message : 'Something went wrong. Try again.';
