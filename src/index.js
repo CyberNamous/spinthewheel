@@ -4,9 +4,23 @@ const ALERT_TTL_MS = 120000;
 const MAX_BODY = 20000;
 const MAX_SHOT_CHARS = 450000;
 const MAX_APPLY_BODY = 520000;
+const MAX_PENDING_APPS = 300;
+const SPIN_LOCK_MS = 15000;
+const LIST_TTL_MS = 3000;
+let listCache = { at: 0, body: '' };
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff'
+    }
+  });
+
+const jsonText = (text, status = 200) =>
+  new Response(text, {
     status,
     headers: {
       'content-type': 'application/json; charset=utf-8',
@@ -128,12 +142,64 @@ const expireGiveaways = async (env, now) => {
   if (r.meta.changes > 0) await setConfig(env, 'registration_gate', 'closed').run();
 };
 
+const currentOut = async (env) => {
+  const { results } = await env.DB.prepare(
+    "SELECT key, value FROM system_config WHERE key IN ('out_list', 'wheel_command', 'last_landed')"
+  ).all();
+  const c = {};
+  for (const r of results) c[r.key] = r.value;
+  let out = [];
+  try {
+    out = JSON.parse(c.out_list || '[]');
+  } catch {
+    out = [];
+  }
+  out = Array.isArray(out) ? out.filter((n) => typeof n === 'string') : [];
+  if (c.wheel_command === 'spin_elim' && c.last_landed && !out.some((n) => n.toLowerCase() === c.last_landed.toLowerCase())) {
+    out.push(c.last_landed);
+  }
+  return out;
+};
+
+const pickAlive = (env, gid, out) =>
+  env.DB.prepare(
+    `SELECT roblox_username, roblox_lower FROM qualified_entries
+     WHERE giveaway_id = ?1 AND status = 'alive' AND roblox_lower NOT IN (SELECT lower(value) FROM json_each(?2))
+     ORDER BY RANDOM() LIMIT 1`
+  ).bind(gid, JSON.stringify(out)).first();
+
+const claimSpin = async (env, now) => {
+  const [, claim] = await env.DB.batch([
+    env.DB.prepare("INSERT OR IGNORE INTO system_config (key, value) VALUES ('last_spin_at', '0')"),
+    env.DB.prepare("UPDATE system_config SET value = ?1 WHERE key = 'last_spin_at' AND CAST(value AS INTEGER) <= ?2").bind(
+      String(now), now - SPIN_LOCK_MS
+    )
+  ]);
+  return claim.meta.changes === 1;
+};
+
 const purgeEndedStatements = (env) => [
   env.DB.prepare("DELETE FROM manual_applications WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status = 'ended')"),
   env.DB.prepare("DELETE FROM qualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status = 'ended')"),
   env.DB.prepare("DELETE FROM disqualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status = 'ended')"),
   env.DB.prepare("DELETE FROM giveaways WHERE status = 'ended'")
 ];
+
+const matchesToken = async (request, secret) => {
+  if (!secret) return false;
+  const auth = request.headers.get('Authorization') || '';
+  const supplied = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(supplied)),
+    crypto.subtle.digest('SHA-256', enc.encode(secret))
+  ]);
+  return crypto.subtle.timingSafeEqual(a, b);
+};
+
+const STREAM_ACTIONS = new Set([
+  'verify', 'spin_winner', 'spin_elim', 'reset_wheel', 'open_giveaway', 'close_registration', 'end_giveaway'
+]);
 
 const isOwner = async (request, env) => {
   if (!env.OWNER_TOKEN) return false;
@@ -182,7 +248,8 @@ const insertEntry = async (env, gid, roblox, rl, tiktok, tl, level, device, sour
     const r = await env.DB.prepare(
       `INSERT INTO qualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, level, device_hash, status, source, created_at)
        SELECT ?8, ?1, ?2, ?3, ?4, ?5, ?6, 'alive', ?9, ?7
-       WHERE NOT EXISTS (SELECT 1 FROM qualified_entries WHERE giveaway_id = ?8 AND (roblox_lower = ?2 OR tiktok_lower = ?4))`
+       WHERE NOT EXISTS (SELECT 1 FROM qualified_entries WHERE giveaway_id = ?8 AND (roblox_lower = ?2 OR tiktok_lower = ?4))
+         AND NOT EXISTS (SELECT 1 FROM disqualified_entries WHERE giveaway_id = ?8 AND (roblox_lower = ?2 OR tiktok_lower = ?4))`
     ).bind(roblox, rl, tiktok, tl, level, device, now, gid, source).run();
     return r.meta.changes === 1;
   } catch (err) {
@@ -220,7 +287,8 @@ async function handleSubmit(request, env) {
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO disqualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, 'duplicate-submission', ?6, ?7)`
+       SELECT ?1, ?2, ?3, ?4, ?5, 'duplicate-submission', ?6, ?7
+       WHERE NOT EXISTS (SELECT 1 FROM disqualified_entries WHERE giveaway_id = ?1 AND roblox_lower = ?3 AND tiktok_lower = ?5)`
     ).bind(giveaway.id, roblox, rl, tiktok, tl, device, now),
     env.DB.prepare(
       `INSERT INTO disqualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at)
@@ -228,12 +296,12 @@ async function handleSubmit(request, env) {
        FROM qualified_entries
        WHERE giveaway_id = ?1 AND (roblox_lower = ?2 OR tiktok_lower = ?3) AND NOT (roblox_lower = ?2 AND tiktok_lower = ?3)`
     ).bind(giveaway.id, rl, tl, now),
+    env.DB.prepare(
+      `INSERT INTO live_alerts (message, created_at)
+       SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM qualified_entries WHERE giveaway_id = ?3 AND (roblox_lower = ?4 OR tiktok_lower = ?5))`
+    ).bind(`🚨 MULTI-DEVICE CHEAT CAUGHT: ${roblox} / ${tiktok} removed from the wheel`, now, giveaway.id, rl, tl),
     env.DB.prepare('DELETE FROM qualified_entries WHERE giveaway_id = ?1 AND (roblox_lower = ?2 OR tiktok_lower = ?3)').bind(
       giveaway.id, rl, tl
-    ),
-    env.DB.prepare('INSERT INTO live_alerts (message, created_at) VALUES (?1, ?2)').bind(
-      `🚨 MULTI-DEVICE CHEAT CAUGHT: ${roblox} / ${tiktok} removed from the wheel`,
-      now
     )
   ]);
   return json(
@@ -267,12 +335,16 @@ async function handleApply(request, env) {
   const device = await deviceHashFor(request);
   const r = await env.DB.prepare(
     `INSERT INTO manual_applications (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, note, reason, ocr_excerpt, device_hash, screenshot, check_key, status, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12)`
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12
+     WHERE (SELECT COUNT(*) FROM manual_applications WHERE giveaway_id = ?1 AND status = 'pending') < ?13`
   ).bind(
     giveaway.id, roblox, rl, tiktok, tl,
     cleanLine(body.note, 300), cleanLine(body.reason, 200), cleanOcr(body.ocrText).slice(0, 600),
-    device, shot, key, now
+    device, shot, key, now, MAX_PENDING_APPS
   ).run();
+  if (r.meta.changes !== 1) {
+    return json({ ok: false, code: 'busy', error: 'Too many manual applications are waiting right now. Please try again in a few minutes.' }, 429);
+  }
   return json({ ok: true, id: r.meta.last_row_id, key });
 }
 
@@ -297,6 +369,7 @@ async function handleRegistration(request, env) {
 async function handlePublicList(request, env) {
   if (request.method !== 'GET') return json({ ok: false, error: 'Method not allowed.' }, 405);
   const now = Date.now();
+  if (listCache.body && now - listCache.at < LIST_TTL_MS) return jsonText(listCache.body);
   const [entries, alerts, cfg, live] = await env.DB.batch([
     env.DB.prepare(
       "SELECT roblox_username AS name, status FROM qualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status != 'ended') ORDER BY id ASC"
@@ -305,7 +378,7 @@ async function handlePublicList(request, env) {
       now - ALERT_TTL_MS
     ),
     env.DB.prepare(
-      "SELECT key, value FROM system_config WHERE key IN ('wheel_command','force_reset','last_landed','spin_id','registration_gate')"
+      "SELECT key, value FROM system_config WHERE key IN ('wheel_command','force_reset','last_landed','spin_id','registration_gate','out_list')"
     ),
     env.DB.prepare("SELECT status, expires_at FROM giveaways WHERE status != 'ended' ORDER BY id DESC LIMIT 1")
   ]);
@@ -313,9 +386,16 @@ async function handlePublicList(request, env) {
   for (const row of cfg.results) c[row.key] = row.value;
   const g = live.results[0];
   const registration = !g ? 'none' : g.status === 'open' && g.expires_at > now && c.registration_gate === 'open' ? 'open' : 'closed';
-  return json({
+  let outList = [];
+  try {
+    outList = JSON.parse(c.out_list || '[]');
+  } catch {
+    outList = [];
+  }
+  const payload = JSON.stringify({
     ok: true,
     registration,
+    out: Array.isArray(outList) ? outList : [],
     entries: entries.results,
     alerts: alerts.results,
     command: c.wheel_command || 'idle',
@@ -324,6 +404,8 @@ async function handlePublicList(request, env) {
     force_reset: c.force_reset === 'true',
     gate: c.registration_gate || 'open'
   });
+  listCache = { at: now, body: payload };
+  return jsonText(payload);
 }
 
 async function handleOwnerAction(request, env) {
@@ -407,9 +489,26 @@ async function handleOwnerAction(request, env) {
   });
 }
 
-async function handleAdminAction(request, env, url) {
+async function handleStreamAction(request, env, url) {
   if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed.' }, 405);
-  if (!(await isAdmin(request, env, url))) return json({ ok: false, error: 'Unauthorized.' }, 401);
+  const allowed = (await matchesToken(request, env.STREAM_TOKEN)) || (await matchesToken(request, env.ADMIN_TOKEN));
+  if (!allowed) return json({ ok: false, error: 'Unauthorized.' }, 401);
+  let body;
+  try {
+    body = await request.clone().json();
+  } catch {
+    return json({ ok: false, error: 'Invalid JSON.' }, 400);
+  }
+  if (!STREAM_ACTIONS.has(body.action)) {
+    return json({ ok: false, error: 'That action is only available in the admin panel.' }, 403);
+  }
+  if (body.action === 'verify') return json({ ok: true });
+  return handleAdminAction(request, env, url, true);
+}
+
+async function handleAdminAction(request, env, url, authed = false) {
+  if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed.' }, 405);
+  if (!authed && !(await isAdmin(request, env, url))) return json({ ok: false, error: 'Unauthorized.' }, 401);
 
   let body;
   try {
@@ -430,6 +529,22 @@ async function handleAdminAction(request, env, url) {
         'SELECT id, status, opened_at, expires_at, ended_at FROM giveaways ORDER BY id DESC LIMIT 1'
       ).first();
       const gid = latest ? latest.id : 0;
+      const [mq, md, ma, mal, wheelCfg] = await env.DB.batch([
+        env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM qualified_entries'),
+        env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM disqualified_entries'),
+        env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM manual_applications'),
+        env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM live_alerts'),
+        env.DB.prepare(
+          "SELECT key, value FROM system_config WHERE key IN ('spin_id','wheel_command','last_landed','force_reset') ORDER BY key"
+        )
+      ]);
+      const fp = [
+        gid, latest ? latest.status : 'none', mq.results[0].m, md.results[0].m, ma.results[0].m, mal.results[0].m,
+        wheelCfg.results.map((r) => r.value).join('~')
+      ].join('.');
+      if (!body.force && body.fp && body.fp === fp) {
+        return json({ ok: true, unchanged: true, fp, giveaway: latest || null, now });
+      }
       const [q, d, b, a, apps] = await env.DB.batch([
         env.DB.prepare(
           'SELECT id, roblox_username, tiktok_username, level, status, source, device_hash, created_at FROM qualified_entries WHERE giveaway_id = ?1 ORDER BY id ASC'
@@ -447,6 +562,7 @@ async function handleAdminAction(request, env, url) {
       ]);
       return json({
         ok: true,
+        fp,
         giveaway: latest || null,
         qualified: q.results,
         disqualified: d.results,
@@ -471,7 +587,9 @@ async function handleAdminAction(request, env, url) {
         setConfig(env, 'registration_gate', 'open'),
         setConfig(env, 'wheel_command', 'idle'),
         setConfig(env, 'last_landed', ''),
-        setConfig(env, 'force_reset', 'true')
+        setConfig(env, 'force_reset', 'true'),
+        setConfig(env, 'last_spin_at', '0'),
+        setConfig(env, 'out_list', '[]')
       ]);
       return json({ ok: true, expires_at: expires });
     }
@@ -497,7 +615,9 @@ async function handleAdminAction(request, env, url) {
         setConfig(env, 'registration_gate', 'closed'),
         setConfig(env, 'wheel_command', 'idle'),
         setConfig(env, 'last_landed', ''),
-        setConfig(env, 'force_reset', 'true')
+        setConfig(env, 'force_reset', 'true'),
+        setConfig(env, 'last_spin_at', '0'),
+        setConfig(env, 'out_list', '[]')
       ]);
       return json({ ok: true });
     }
@@ -509,14 +629,15 @@ async function handleAdminAction(request, env, url) {
     case 'spin_winner': {
       const g = await activeGiveaway(env);
       if (!g) return noGiveaway();
-      const pick = await env.DB.prepare(
-        "SELECT roblox_username, roblox_lower FROM qualified_entries WHERE giveaway_id = ?1 AND status = 'alive' ORDER BY RANDOM() LIMIT 1"
-      ).bind(g.id).first();
-      if (!pick) return json({ ok: false, error: 'No alive entries left to crown.' }, 409);
+      const out = await currentOut(env);
+      const pick = await pickAlive(env, g.id, out);
+      if (!pick) return json({ ok: false, error: 'No survivors left to crown.' }, 409);
+      if (!(await claimSpin(env, now))) return json({ ok: false, error: 'A spin is already in progress. Wait a few seconds.' }, 409);
       await env.DB.batch([
         env.DB.prepare("UPDATE qualified_entries SET status = 'winner' WHERE giveaway_id = ?1 AND roblox_lower = ?2").bind(
           g.id, pick.roblox_lower
         ),
+        setConfig(env, 'out_list', JSON.stringify(out)),
         setConfig(env, 'wheel_command', 'spin_winner'),
         setConfig(env, 'last_landed', pick.roblox_username),
         setConfig(env, 'force_reset', 'false'),
@@ -528,17 +649,18 @@ async function handleAdminAction(request, env, url) {
     case 'spin_elim': {
       const g = await activeGiveaway(env);
       if (!g) return noGiveaway();
-      const count = await env.DB.prepare(
-        "SELECT COUNT(*) AS n FROM qualified_entries WHERE giveaway_id = ?1 AND status = 'alive'"
-      ).bind(g.id).first();
-      if (!count || count.n < 1) return json({ ok: false, error: 'No alive entries to spin.' }, 409);
+      const out = await currentOut(env);
+      const pick = await pickAlive(env, g.id, out);
+      if (!pick) return json({ ok: false, error: 'Nobody is left to knock out.' }, 409);
+      if (!(await claimSpin(env, now))) return json({ ok: false, error: 'A spin is already in progress. Wait a few seconds.' }, 409);
       await env.DB.batch([
+        setConfig(env, 'out_list', JSON.stringify(out)),
         setConfig(env, 'wheel_command', 'spin_elim'),
-        setConfig(env, 'last_landed', ''),
+        setConfig(env, 'last_landed', pick.roblox_username),
         setConfig(env, 'force_reset', 'false'),
         bumpSpin(env)
       ]);
-      return json({ ok: true });
+      return json({ ok: true, target: pick.roblox_username });
     }
 
     case 'reset_wheel':
@@ -546,7 +668,9 @@ async function handleAdminAction(request, env, url) {
         env.DB.prepare("UPDATE qualified_entries SET status = 'alive'"),
         setConfig(env, 'wheel_command', 'idle'),
         setConfig(env, 'last_landed', ''),
-        setConfig(env, 'force_reset', 'true')
+        setConfig(env, 'force_reset', 'true'),
+        setConfig(env, 'last_spin_at', '0'),
+        setConfig(env, 'out_list', '[]')
       ]);
       return json({ ok: true });
 
@@ -708,7 +832,9 @@ async function handleAdminAction(request, env, url) {
         setConfig(env, 'wheel_command', 'idle'),
         setConfig(env, 'last_landed', ''),
         setConfig(env, 'force_reset', 'true'),
-        setConfig(env, 'spin_id', '0')
+        setConfig(env, 'spin_id', '0'),
+        setConfig(env, 'last_spin_at', '0'),
+        setConfig(env, 'out_list', '[]')
       ]);
       return json({ ok: true });
 
@@ -726,6 +852,16 @@ export default {
       if (url.pathname === '/api/apply') return await handleApply(request, env);
       if (url.pathname === '/api/apply-status') return await handleApplyStatus(request, env, url);
       if (url.pathname === '/api/public-list') return await handlePublicList(request, env);
+      if (url.pathname === '/api/stream-action') {
+        try {
+          const res = await handleStreamAction(request, env, url);
+          if (res.status === 200) listCache.at = 0;
+          return res;
+        } catch (err) {
+          console.error('Stream action error:', err && err.stack ? err.stack : err);
+          return json({ ok: false, error: 'Something went wrong. Try again, or use the admin panel.' }, 500);
+        }
+      }
       if (url.pathname === '/api/owner-action') {
         try {
           return await handleOwnerAction(request, env);
@@ -736,7 +872,9 @@ export default {
       }
       if (url.pathname === '/api/admin-action') {
         try {
-          return await handleAdminAction(request, env, url);
+          const res = await handleAdminAction(request, env, url);
+          if (res.status === 200) listCache.at = 0;
+          return res;
         } catch (err) {
           console.error('Admin action error:', err && err.stack ? err.stack : err);
           return json({ ok: false, error: `Database error: ${String((err && err.message) || err).slice(0, 220)}` }, 500);
