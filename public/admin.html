@@ -60,6 +60,7 @@ td.act{display:flex;gap:6px}
 #modal h2{color:var(--pink2)}
 #modalErr{color:var(--red);min-height:1.2em;font-size:.9rem}
 button.ok{background:#1f8f55}
+.count{background:#12121a;border:1.5px solid var(--pink);border-radius:99px;padding:6px 14px;font-weight:900;color:var(--pink)}
 .wrap{display:flex;flex-wrap:wrap;gap:6px}
 .tokenbox{margin-top:14px;border:1.5px dashed var(--pink);border-radius:12px;padding:14px;display:grid;gap:8px;background:#12121a}
 .tokenbox code{font-size:1.4rem;font-weight:900;color:var(--pink);letter-spacing:.04em;overflow-wrap:anywhere}
@@ -106,6 +107,7 @@ button.ok{background:#1f8f55}
   <header class="top">
     <h1>Wheel Control Panel</h1>
     <div class="bar">
+      <span class="count" id="entryCount">👥 0 entered</span>
       <span class="meta" id="cmdInfo"></span>
       <button class="ghost" id="clearAlerts" type="button">Clear banner</button>
     </div>
@@ -411,6 +413,7 @@ button.ok{background:#1f8f55}
     renderGiveaway(d.giveaway, d.now);
     renderApps(d.applications || []);
     renderQualified(d.qualified);
+    $('entryCount').textContent = '👥 ' + d.qualified.length + ' entered';
     renderDisq(d.disqualified, d.blacklist);
     var c = d.config || {};
     $('cmdInfo').textContent = 'Command: ' + (c.wheel_command || 'idle') + (c.last_landed ? ' • Last landed: ' + c.last_landed : '');

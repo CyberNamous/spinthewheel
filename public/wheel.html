@@ -23,6 +23,13 @@ canvas{display:block}
 #result b{color:var(--pink)}
 #sound{position:absolute;top:0;left:0;background:var(--panel);color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;font-size:.85rem;cursor:pointer}
 #sound.done{display:none}
+#entryPill{position:absolute;top:0;right:0;background:rgba(22,22,26,.92);border:1.5px solid var(--neon);border-radius:14px;padding:8px 16px;text-align:right;box-shadow:0 0 24px rgba(255,0,127,.35)}
+#pillMain{display:block;font-size:clamp(1rem,2vw,1.6rem);font-weight:900;color:#fff}
+#pillReg{display:block;font-size:.8rem;font-weight:700;color:var(--muted)}
+#pillReg.open{color:var(--pink)}
+#pillReg:empty{display:none}
+#entryPill.bump{animation:bump .6s ease}
+@keyframes bump{0%{transform:scale(1)}35%{transform:scale(1.12);box-shadow:0 0 40px rgba(255,0,127,.8)}100%{transform:scale(1)}}
 #right{background:var(--panel);border:1px solid var(--line);border-radius:16px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
 #right header{padding:16px 20px;border-bottom:1px solid var(--line)}
 #right h2{margin:0;font-size:1.5rem;font-weight:900;letter-spacing:.04em;color:var(--pink2);text-shadow:0 0 18px rgba(255,0,127,.5)}
@@ -46,6 +53,7 @@ canvas{display:block}
   <section id="left">
     <div id="wrap"><canvas id="wheel" aria-label="Survival wheel"></canvas></div>
     <button id="sound" type="button">🔊 Enable sound</button>
+    <div id="entryPill" aria-live="polite"><span id="pillMain">0 entered</span><span id="pillReg"></span></div>
     <div id="result" aria-live="assertive"></div>
   </section>
   <aside id="right">
@@ -70,6 +78,24 @@ canvas{display:block}
   rolling.loop = true; rolling.preload = 'auto'; victory.preload = 'auto';
 
   var entries = [], segs = [], eliminated = new Set();
+  var registration = 'none', lastTotal = null;
+  var pill = document.getElementById('entryPill');
+  var pillMain = document.getElementById('pillMain');
+  var pillReg = document.getElementById('pillReg');
+
+  function updatePill() {
+    var total = entries.length;
+    var alive = entries.filter(function (e) { return e.status === 'alive' && !eliminated.has(e.name); }).length;
+    pillMain.textContent = eliminated.size ? alive + ' alive of ' + total : total + ' entered';
+    pillReg.textContent = registration === 'open' ? '● Registration open' : registration === 'closed' ? 'Registration closed' : '';
+    pillReg.className = registration;
+    if (lastTotal !== null && total > lastTotal) {
+      pill.classList.remove('bump');
+      void pill.offsetWidth;
+      pill.classList.add('bump');
+    }
+    lastTotal = total;
+  }
   var theta = -Math.PI / 2, flick = 0, size = 600;
   var spinning = false, busy = false, lastSpin = null, lastSig = '';
 
@@ -211,11 +237,12 @@ canvas{display:block}
       victory.currentTime = 0; victory.volume = 1;
       var p = victory.play(); if (p && p.catch) p.catch(function () {});
       showResult('WINNER', name);
-      busy = false; renderLog();
+      busy = false; renderLog(); updatePill();
     } else {
       eliminated.add(name);
       showResult('OUT', name);
       renderLog();
+      updatePill();
       setTimeout(function () { rebuildSegs(null); busy = false; draw(); }, 2400);
     }
   }
@@ -239,8 +266,10 @@ canvas{display:block}
       if (d.force_reset && eliminated.size) { eliminated.clear(); lastSig = ''; hideResult(); }
       if (d.force_reset) hideResult();
       entries = d.entries || [];
+      registration = d.registration || 'none';
       applyAlerts(d.alerts);
       renderLog();
+      updatePill();
       if (lastSpin === null) lastSpin = d.spin_id;
       if (!busy) { rebuildSegs(null); draw(); }
       if (!busy && d.spin_id > lastSpin && (d.command === 'spin_winner' || d.command === 'spin_elim')) {
