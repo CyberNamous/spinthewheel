@@ -135,6 +135,18 @@ const purgeEndedStatements = (env) => [
   env.DB.prepare("DELETE FROM giveaways WHERE status = 'ended'")
 ];
 
+const isOwner = async (request, env) => {
+  if (!env.OWNER_TOKEN) return false;
+  const auth = request.headers.get('Authorization') || '';
+  const supplied = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(supplied)),
+    crypto.subtle.digest('SHA-256', enc.encode(env.OWNER_TOKEN))
+  ]);
+  return crypto.subtle.timingSafeEqual(a, b);
+};
+
 async function gatekeep(env, config, body, now) {
   if (config.registration_gate !== 'open') {
     return { error: json({ ok: false, code: 'closed', error: 'No giveaway is open for registration right now.' }, 403) };
@@ -307,6 +319,87 @@ async function handlePublicList(request, env) {
     target: c.last_landed || '',
     force_reset: c.force_reset === 'true',
     gate: c.registration_gate || 'open'
+  });
+}
+
+async function handleOwnerAction(request, env) {
+  if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed.' }, 405);
+  if (!(await isOwner(request, env))) return json({ ok: false, error: 'Unauthorized.' }, 401);
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    body = {};
+  }
+  if (body.action === 'verify') return json({ ok: true });
+  if (body.action !== 'metrics') return json({ ok: false, error: 'Unknown action.' }, 400);
+
+  const now = Date.now();
+  const g = await env.DB.prepare(
+    'SELECT id, status, opened_at, expires_at, ended_at FROM giveaways ORDER BY id DESC LIMIT 1'
+  ).first();
+  const gid = g ? g.id : 0;
+  const [totals, timeline, apps, disq, shared, levels, counts, cfg, alerts] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(status = 'alive'), 0) AS alive,
+              COALESCE(SUM(status = 'winner'), 0) AS winners,
+              COALESCE(SUM(source = 'ocr'), 0) AS ocr,
+              COALESCE(SUM(source = 'manual'), 0) AS manual,
+              COALESCE(SUM(source = 'manual-approved'), 0) AS approved,
+              COALESCE(ROUND(AVG(CASE WHEN level > 0 THEN level END), 1), 0) AS avg_level,
+              COALESCE(MAX(level), 0) AS max_level
+       FROM qualified_entries WHERE giveaway_id = ?1`
+    ).bind(gid),
+    env.DB.prepare(
+      'SELECT (created_at / 300000) * 300000 AS t, COUNT(*) AS n FROM qualified_entries WHERE giveaway_id = ?1 GROUP BY t ORDER BY t ASC LIMIT 400'
+    ).bind(gid),
+    env.DB.prepare('SELECT status, COUNT(*) AS n FROM manual_applications WHERE giveaway_id = ?1 GROUP BY status').bind(gid),
+    env.DB.prepare('SELECT reason, COUNT(*) AS n FROM disqualified_entries WHERE giveaway_id = ?1 GROUP BY reason ORDER BY n DESC').bind(gid),
+    env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM (SELECT device_hash FROM qualified_entries WHERE giveaway_id = ?1 AND device_hash != '' GROUP BY device_hash HAVING COUNT(*) > 1)"
+    ).bind(gid),
+    env.DB.prepare(
+      `SELECT CASE WHEN level >= 50 THEN '50+' WHEN level >= 20 THEN '20-49' WHEN level >= 10 THEN '10-19' WHEN level >= 5 THEN '5-9' ELSE 'unscanned' END AS band,
+              COUNT(*) AS n
+       FROM qualified_entries WHERE giveaway_id = ?1 GROUP BY band`
+    ).bind(gid),
+    env.DB.prepare(
+      `SELECT (SELECT COUNT(*) FROM qualified_entries) AS qualified,
+              (SELECT COUNT(*) FROM disqualified_entries) AS disqualified,
+              (SELECT COUNT(*) FROM manual_applications) AS applications,
+              (SELECT COUNT(*) FROM giveaways) AS giveaways,
+              (SELECT COUNT(*) FROM live_alerts) AS alerts,
+              (SELECT COUNT(*) FROM permanent_blacklist) AS bans,
+              (SELECT COALESCE(SUM(LENGTH(screenshot)), 0) FROM manual_applications) AS screenshot_bytes`
+    ),
+    env.DB.prepare("SELECT key, value FROM system_config WHERE key IN ('wheel_command','spin_id','last_landed','registration_gate')"),
+    env.DB.prepare('SELECT message, created_at FROM live_alerts ORDER BY id DESC LIMIT 5')
+  ]);
+  const c = {};
+  for (const row of cfg.results) c[row.key] = row.value;
+  const appStatus = {};
+  for (const row of apps.results) appStatus[row.status] = row.n;
+  let effective = g ? g.status : 'none';
+  if (g && g.status === 'open' && g.expires_at <= now) effective = 'expired';
+  return json({
+    ok: true,
+    now,
+    giveaway: g ? { ...g, effective } : null,
+    entries: totals.results[0],
+    timeline: timeline.results,
+    applications: appStatus,
+    disqualified: disq.results,
+    shared_devices: shared.results[0] ? shared.results[0].n : 0,
+    levels: levels.results,
+    storage: counts.results[0],
+    wheel: {
+      command: c.wheel_command || 'idle',
+      spins: Number(c.spin_id || 0),
+      last_landed: c.last_landed || '',
+      gate: c.registration_gate || 'open'
+    },
+    alerts: alerts.results
   });
 }
 
@@ -629,6 +722,14 @@ export default {
       if (url.pathname === '/api/apply') return await handleApply(request, env);
       if (url.pathname === '/api/apply-status') return await handleApplyStatus(request, env, url);
       if (url.pathname === '/api/public-list') return await handlePublicList(request, env);
+      if (url.pathname === '/api/owner-action') {
+        try {
+          return await handleOwnerAction(request, env);
+        } catch (err) {
+          console.error('Owner action error:', err && err.stack ? err.stack : err);
+          return json({ ok: false, error: `Database error: ${String((err && err.message) || err).slice(0, 220)}` }, 500);
+        }
+      }
       if (url.pathname === '/api/admin-action') {
         try {
           return await handleAdminAction(request, env, url);
