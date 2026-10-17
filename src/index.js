@@ -271,8 +271,8 @@ async function handleSubmit(request, env) {
 
   const ocr = cleanOcr(body.ocrText);
   const level = parseLevel(ocr);
-  if (level < 5) {
-    return json({ ok: false, code: 'level', error: 'A fan level of 5 or higher is required.' }, 422);
+  if (level < 1) {
+    return json({ ok: false, code: 'level', error: 'A fan level of 1 or higher is required.' }, 422);
   }
   const fan = norm(config.fan_club_name);
   if (!fan || !containsFan(ocr, fan)) {
