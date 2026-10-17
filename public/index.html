@@ -424,14 +424,14 @@ textarea:focus{outline:none;border-color:var(--neon);box-shadow:0 0 0 3px rgba(2
         if (p === 0) firstLines = collectLines(data);
         var cleaned = cleanText(allText);
         tokens = cleaned.slice(0, 1900);
-        if (parseLevel(cleaned) >= 5 && hasFan(cleaned)) break;
+        if (parseLevel(cleaned) >= 1 && hasFan(cleaned)) break;
       }
 
       setProgress(88, 'Checking text consistency...');
       if (fontBoundaryFlag(firstLines)) throw scanFail('The text in this screenshot looks edited. If it is real, send it for manual review.');
 
       var level = parseLevel(tokens);
-      if (level < 5) throw scanFail('We read fan level ' + level + '. You need level 5 or higher.');
+      if (level < 1) throw scanFail('We read fan level ' + level + '. You need level 1 or higher.');
       if (!hasFan(tokens)) throw scanFail('We could not find the fan club name in your screenshot.');
 
       setProgress(94, 'Sending your entry...');
