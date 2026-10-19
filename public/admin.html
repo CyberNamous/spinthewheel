@@ -37,6 +37,10 @@ tr.dup td{background:rgba(255,77,94,.14)}
 #rsn{position:fixed;inset:0;background:rgba(15,15,17,.88);display:flex;align-items:center;justify-content:center;padding:20px;z-index:15}
 #rsn .rbox{background:var(--panel);border:1px solid var(--red);border-radius:14px;padding:22px;width:100%;max-width:360px;display:grid;gap:10px}
 #rsn h2{color:var(--red)}
+#mig{position:fixed;inset:0;background:rgba(15,15,17,.88);display:flex;align-items:center;justify-content:center;padding:20px;z-index:15}
+#mig .rbox{background:var(--panel);border:1px solid var(--pink);border-radius:14px;padding:22px;width:100%;max-width:380px;display:grid;gap:10px}
+#mig h2{color:var(--pink2)}
+.savedrow{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:10px;background:#12121a}
 input[type=text],input[type=password]{background:#0f0f11;border:1.5px solid var(--line);border-radius:10px;color:var(--text);font:inherit;padding:10px 12px;min-width:0}
 .boards{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
 .board{border-radius:14px;border:1.5px solid;padding:16px;background:var(--panel);overflow:hidden}
@@ -93,6 +97,16 @@ button.ok{background:#1f8f55}
   </form>
 </div>
 
+<div id="mig" role="dialog" aria-modal="true" aria-labelledby="migTitle" hidden>
+  <div class="rbox">
+    <h2 id="migTitle">Save current session</h2>
+    <div class="meta">The current entries are kept as a saved session. A new 24-hour session opens right away. Pending manual applications move with the entries.</div>
+    <button type="button" data-c="1">Save and carry the entries over</button>
+    <button type="button" data-c="0">Save and start empty</button>
+    <button type="button" class="ghost" id="migCancel">Cancel</button>
+  </div>
+</div>
+
 <div id="rsn" role="dialog" aria-modal="true" aria-labelledby="rsnTitle" hidden>
   <div class="rbox">
     <h2 id="rsnTitle">Disqualify <span id="rsnName"></span></h2>
@@ -114,6 +128,13 @@ button.ok{background:#1f8f55}
     </div>
   </header>
   <main>
+    <section class="card">
+      <h2>🔁 Migrate Data</h2>
+      <p class="meta" style="margin:0 0 12px">Start a fresh session without losing the current one. It only works before the wheel has been spun. The current entries are kept as a saved session, and can be carried into the new session.</p>
+      <div class="bar"><button class="ok" id="migStart" type="button">Save current &amp; start new session</button></div>
+      <div id="savedBox" style="margin-top:14px"></div>
+    </section>
+
     <section class="card">
       <h2>🎁 Giveaway</h2>
       <div class="meta" id="gwInfo">Loading...</div>
@@ -396,6 +417,42 @@ button.ok{background:#1f8f55}
     box.append(grid);
   }
 
+  function askMigrate() {
+    return new Promise(function (resolve) {
+      var m = $('mig');
+      m.hidden = false;
+      function done(v) { m.hidden = true; m.removeEventListener('click', onClick); resolve(v); }
+      function onClick(e) {
+        var b = e.target.closest('button[data-c]');
+        if (b) done(b.dataset.c === '1' ? 'carry' : 'empty');
+        else if (e.target.id === 'migCancel' || e.target === m) done(null);
+      }
+      m.addEventListener('click', onClick);
+    });
+  }
+
+  function renderSaved(list, hasActive) {
+    var box = $('savedBox'); box.textContent = '';
+    $('migStart').disabled = !hasActive;
+    if (!list.length) { box.append(h('div', { class: 'empty' }, 'No saved sessions.')); return; }
+    box.append(h('div', { class: 'meta' }, 'Saved sessions (kept until you delete them)'));
+    list.forEach(function (s) {
+      var into = h('button', { class: 'sm ok', type: 'button', onclick: async function () {
+        if (!confirm('Copy the entries from saved session #' + s.id + ' into the current session? Duplicates, banned names and anyone disqualified here are skipped. The saved session stays as it is.')) return;
+        var d = await run('migrate_in', { id: s.id }, null);
+        if (d.ok) toast('Migrated ' + d.entries + ' entries' + (d.disqualified ? ' and ' + d.disqualified + ' disqualifications' : '') + '.');
+      } }, 'Migrate into current');
+      into.disabled = !hasActive;
+      var del = h('button', { class: 'sm danger', type: 'button', onclick: function () {
+        if (confirm('Delete saved session #' + s.id + ' and all its entries? This cannot be undone.')) run('delete_saved', { id: s.id }, 'Saved session deleted.');
+      } }, 'Delete');
+      box.append(h('div', { class: 'savedrow' },
+        h('div', {}, h('b', {}, 'Session #' + s.id),
+          h('div', { class: 'meta' }, 'Saved ' + when(s.ended_at || s.opened_at) + ' • ' + s.entries + ' entries • ' + s.disqualified + ' disqualified' + (s.pending ? ' • ' + s.pending + ' pending' : ''))),
+        h('div', { class: 'wrap' }, into, del)));
+    });
+  }
+
   function renderGiveaway(g, now) {
     var info;
     if (!g) info = 'No giveaway yet. Tap "Open giveaway" to start one.';
@@ -426,6 +483,7 @@ button.ok{background:#1f8f55}
     renderGiveaway(d.giveaway, d.now);
     if (d.unchanged) return;
     lastFp = d.fp || '';
+    renderSaved(d.saved || [], !!(d.giveaway && d.giveaway.status !== 'ended'));
     renderApps(d.applications || []);
     renderQualified(d.qualified);
     $('entryCount').textContent = '👥 ' + d.qualified.length + ' entered';
@@ -472,7 +530,13 @@ button.ok{background:#1f8f55}
     if (confirm('Reset the wheel? All entries come back alive and any winner is cleared.')) run('reset_wheel', {}, 'Wheel reset.');
   });
   $('wipe').addEventListener('click', function () {
-    if (confirm('Wipe all giveaways, entries, applications, cheater logs and alerts? Permanent bans are kept. This cannot be undone.')) run('wipe_d1', {}, 'Tables wiped.');
+    if (confirm('Wipe all giveaways (including saved sessions), entries, applications, cheater logs and alerts? Permanent bans are kept. This cannot be undone.')) run('wipe_d1', {}, 'Tables wiped.');
+  });
+  $('migStart').addEventListener('click', async function () {
+    var choice = await askMigrate();
+    if (!choice) return;
+    var d = await run('save_and_new', { carry: choice === 'carry' }, null);
+    if (d.ok) toast(choice === 'carry' ? 'Saved. New session opened with ' + d.carried.entries + ' entries carried over.' : 'Saved. New empty session opened.');
   });
   $('gwOpen').addEventListener('click', async function () {
     if (!confirm('Open a new giveaway? Registration stays open for 24 hours. You can close it earlier.')) return;
