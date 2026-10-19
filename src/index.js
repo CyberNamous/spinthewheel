@@ -133,7 +133,7 @@ const findOpenGiveaway = (env, now) =>
   ).bind(now).first();
 
 const activeGiveaway = (env) =>
-  env.DB.prepare("SELECT id, status, opened_at, expires_at FROM giveaways WHERE status != 'ended' ORDER BY id DESC LIMIT 1").first();
+  env.DB.prepare("SELECT id, status, opened_at, expires_at FROM giveaways WHERE status NOT IN ('ended', 'saved') ORDER BY id DESC LIMIT 1").first();
 
 const expireGiveaways = async (env, now) => {
   const r = await env.DB.prepare(
@@ -372,7 +372,7 @@ async function handlePublicList(request, env) {
   if (listCache.body && now - listCache.at < LIST_TTL_MS) return jsonText(listCache.body);
   const [entries, alerts, cfg, live] = await env.DB.batch([
     env.DB.prepare(
-      "SELECT roblox_username AS name, status FROM qualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status != 'ended') ORDER BY id ASC"
+      "SELECT roblox_username AS name, status FROM qualified_entries WHERE giveaway_id IN (SELECT id FROM giveaways WHERE status NOT IN ('ended', 'saved')) ORDER BY id ASC"
     ),
     env.DB.prepare('SELECT id, message, created_at FROM live_alerts WHERE created_at > ?1 ORDER BY id DESC LIMIT 5').bind(
       now - ALERT_TTL_MS
@@ -380,7 +380,7 @@ async function handlePublicList(request, env) {
     env.DB.prepare(
       "SELECT key, value FROM system_config WHERE key IN ('wheel_command','force_reset','last_landed','spin_id','registration_gate','out_list')"
     ),
-    env.DB.prepare("SELECT status, expires_at FROM giveaways WHERE status != 'ended' ORDER BY id DESC LIMIT 1")
+    env.DB.prepare("SELECT status, expires_at FROM giveaways WHERE status NOT IN ('ended', 'saved') ORDER BY id DESC LIMIT 1")
   ]);
   const c = {};
   for (const row of cfg.results) c[row.key] = row.value;
@@ -422,7 +422,7 @@ async function handleOwnerAction(request, env) {
 
   const now = Date.now();
   const g = await env.DB.prepare(
-    'SELECT id, status, opened_at, expires_at, ended_at FROM giveaways ORDER BY id DESC LIMIT 1'
+    "SELECT id, status, opened_at, expires_at, ended_at FROM giveaways WHERE status != 'saved' ORDER BY id DESC LIMIT 1"
   ).first();
   const gid = g ? g.id : 0;
   const [totals, timeline, apps, disq, shared, levels, counts, cfg, alerts] = await env.DB.batch([
@@ -455,6 +455,7 @@ async function handleOwnerAction(request, env) {
               (SELECT COUNT(*) FROM disqualified_entries) AS disqualified,
               (SELECT COUNT(*) FROM manual_applications) AS applications,
               (SELECT COUNT(*) FROM giveaways) AS giveaways,
+              (SELECT COUNT(*) FROM giveaways WHERE status = 'saved') AS saved,
               (SELECT COUNT(*) FROM live_alerts) AS alerts,
               (SELECT COUNT(*) FROM permanent_blacklist) AS bans,
               (SELECT COALESCE(SUM(LENGTH(screenshot)), 0) FROM manual_applications) AS screenshot_bytes`
@@ -526,26 +527,28 @@ async function handleAdminAction(request, env, url, authed = false) {
     case 'get_state': {
       await expireGiveaways(env, now);
       const latest = await env.DB.prepare(
-        'SELECT id, status, opened_at, expires_at, ended_at FROM giveaways ORDER BY id DESC LIMIT 1'
+        "SELECT id, status, opened_at, expires_at, ended_at FROM giveaways WHERE status != 'saved' ORDER BY id DESC LIMIT 1"
       ).first();
       const gid = latest ? latest.id : 0;
-      const [mq, md, ma, mal, wheelCfg] = await env.DB.batch([
+      const [mq, md, ma, mal, wheelCfg, savedFp] = await env.DB.batch([
         env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM qualified_entries'),
         env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM disqualified_entries'),
         env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM manual_applications'),
         env.DB.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM live_alerts'),
         env.DB.prepare(
           "SELECT key, value FROM system_config WHERE key IN ('spin_id','wheel_command','last_landed','force_reset') ORDER BY key"
-        )
+        ),
+        env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM giveaways WHERE status = 'saved'")
       ]);
       const fp = [
         gid, latest ? latest.status : 'none', mq.results[0].m, md.results[0].m, ma.results[0].m, mal.results[0].m,
-        wheelCfg.results.map((r) => r.value).join('~')
+        wheelCfg.results.map((r) => r.value).join('~'),
+        `${savedFp.results[0].n}:${savedFp.results[0].m}`
       ].join('.');
       if (!body.force && body.fp && body.fp === fp) {
         return json({ ok: true, unchanged: true, fp, giveaway: latest || null, now });
       }
-      const [q, d, b, a, apps] = await env.DB.batch([
+      const [q, d, b, a, apps, savedList] = await env.DB.batch([
         env.DB.prepare(
           'SELECT id, roblox_username, tiktok_username, level, status, source, device_hash, created_at FROM qualified_entries WHERE giveaway_id = ?1 ORDER BY id ASC'
         ).bind(gid),
@@ -558,7 +561,14 @@ async function handleAdminAction(request, env, url, authed = false) {
           `SELECT a.id, a.roblox_username, a.tiktok_username, a.note, a.reason, a.ocr_excerpt, a.device_hash, a.created_at,
                   EXISTS (SELECT 1 FROM qualified_entries q WHERE q.giveaway_id = a.giveaway_id AND (q.roblox_lower = a.roblox_lower OR q.tiktok_lower = a.tiktok_lower)) AS dup
            FROM manual_applications a WHERE a.giveaway_id = ?1 AND a.status = 'pending' ORDER BY a.id ASC LIMIT 300`
-        ).bind(gid)
+        ).bind(gid),
+        env.DB.prepare(
+          `SELECT g.id, g.opened_at, g.ended_at,
+                  (SELECT COUNT(*) FROM qualified_entries q WHERE q.giveaway_id = g.id) AS entries,
+                  (SELECT COUNT(*) FROM disqualified_entries x WHERE x.giveaway_id = g.id) AS disqualified,
+                  (SELECT COUNT(*) FROM manual_applications m WHERE m.giveaway_id = g.id AND m.status = 'pending') AS pending
+           FROM giveaways g WHERE g.status = 'saved' ORDER BY g.id DESC LIMIT 20`
+        )
       ]);
       return json({
         ok: true,
@@ -569,6 +579,7 @@ async function handleAdminAction(request, env, url, authed = false) {
         blacklist: b.results,
         alerts: a.results,
         applications: apps.results,
+        saved: savedList.results,
         config: await readConfig(env),
         now
       });
@@ -618,6 +629,114 @@ async function handleAdminAction(request, env, url, authed = false) {
         setConfig(env, 'force_reset', 'true'),
         setConfig(env, 'last_spin_at', '0'),
         setConfig(env, 'out_list', '[]')
+      ]);
+      return json({ ok: true });
+    }
+
+    case 'save_and_new': {
+      const g = await activeGiveaway(env);
+      if (!g) return noGiveaway();
+      const [won, cfgRows] = await env.DB.batch([
+        env.DB.prepare("SELECT COUNT(*) AS n FROM qualified_entries WHERE giveaway_id = ?1 AND status = 'winner'").bind(g.id),
+        env.DB.prepare("SELECT key, value FROM system_config WHERE key IN ('wheel_command', 'out_list')")
+      ]);
+      const cfgMap = {};
+      for (const r of cfgRows.results) cfgMap[r.key] = r.value;
+      let outCount = 0;
+      try {
+        outCount = JSON.parse(cfgMap.out_list || '[]').length;
+      } catch {
+        outCount = 0;
+      }
+      if (won.results[0].n > 0 || outCount > 0 || ['spin_winner', 'spin_elim'].includes(cfgMap.wheel_command)) {
+        return json({ ok: false, code: 'spun', error: 'The wheel has already been spun for this giveaway. End it instead, or reset the wheel first.' }, 409);
+      }
+      const carry = body.carry === true;
+      const expires = now + TOKEN_TTL_MS;
+      const NEW = '(SELECT MAX(id) FROM giveaways)';
+      const stmts = [
+        ...purgeEndedStatements(env),
+        env.DB.prepare("UPDATE giveaways SET status = 'saved', token_hash = '', ended_at = ?2 WHERE id = ?1").bind(g.id, now),
+        env.DB.prepare("INSERT INTO giveaways (token_hash, status, opened_at, expires_at) VALUES ('', 'open', ?1, ?2)").bind(now, expires)
+      ];
+      const copyAt = stmts.length;
+      if (carry) {
+        stmts.push(
+          env.DB.prepare(
+            `INSERT INTO qualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, level, device_hash, status, source, created_at)
+             SELECT ${NEW}, roblox_username, roblox_lower, tiktok_username, tiktok_lower, level, device_hash, 'alive', source, created_at
+             FROM qualified_entries WHERE giveaway_id = ?1`
+          ).bind(g.id),
+          env.DB.prepare(
+            `INSERT INTO disqualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at)
+             SELECT ${NEW}, roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at
+             FROM disqualified_entries WHERE giveaway_id = ?1`
+          ).bind(g.id),
+          env.DB.prepare(`UPDATE manual_applications SET giveaway_id = ${NEW} WHERE giveaway_id = ?1 AND status = 'pending'`).bind(g.id)
+        );
+      }
+      stmts.push(
+        setConfig(env, 'registration_gate', 'open'),
+        setConfig(env, 'wheel_command', 'idle'),
+        setConfig(env, 'last_landed', ''),
+        setConfig(env, 'force_reset', 'true'),
+        setConfig(env, 'last_spin_at', '0'),
+        setConfig(env, 'out_list', '[]')
+      );
+      const results = await env.DB.batch(stmts);
+      return json({
+        ok: true,
+        expires_at: expires,
+        carried: carry
+          ? {
+              entries: results[copyAt].meta.changes,
+              disqualified: results[copyAt + 1].meta.changes,
+              applications: results[copyAt + 2].meta.changes
+            }
+          : null
+      });
+    }
+
+    case 'migrate_in': {
+      const target = await activeGiveaway(env);
+      if (!target) return noGiveaway();
+      const sid = Number(body.id);
+      if (!Number.isInteger(sid)) return json({ ok: false, error: 'Invalid session.' }, 400);
+      const src = await env.DB.prepare("SELECT id FROM giveaways WHERE id = ?1 AND status = 'saved'").bind(sid).first();
+      if (!src) return json({ ok: false, error: 'That saved session no longer exists.' }, 404);
+      const [dq, ent] = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO disqualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, reason, device_hash, disqualified_at)
+           SELECT ?1, s.roblox_username, s.roblox_lower, s.tiktok_username, s.tiktok_lower, s.reason, s.device_hash, s.disqualified_at
+           FROM disqualified_entries s
+           WHERE s.giveaway_id = ?2
+             AND NOT EXISTS (SELECT 1 FROM disqualified_entries x WHERE x.giveaway_id = ?1 AND (x.roblox_lower = s.roblox_lower OR x.tiktok_lower = s.tiktok_lower))
+             AND NOT EXISTS (SELECT 1 FROM qualified_entries t WHERE t.giveaway_id = ?1 AND (t.roblox_lower = s.roblox_lower OR t.tiktok_lower = s.tiktok_lower))`
+        ).bind(target.id, sid),
+        env.DB.prepare(
+          `INSERT INTO qualified_entries (giveaway_id, roblox_username, roblox_lower, tiktok_username, tiktok_lower, level, device_hash, status, source, created_at)
+           SELECT ?1, s.roblox_username, s.roblox_lower, s.tiktok_username, s.tiktok_lower, s.level, s.device_hash, 'alive', s.source, s.created_at
+           FROM qualified_entries s
+           WHERE s.giveaway_id = ?2
+             AND NOT EXISTS (SELECT 1 FROM qualified_entries t WHERE t.giveaway_id = ?1 AND (t.roblox_lower = s.roblox_lower OR t.tiktok_lower = s.tiktok_lower))
+             AND NOT EXISTS (SELECT 1 FROM disqualified_entries x WHERE x.giveaway_id = ?1 AND (x.roblox_lower = s.roblox_lower OR x.tiktok_lower = s.tiktok_lower))
+             AND s.roblox_lower NOT IN (SELECT username_lower FROM permanent_blacklist)
+             AND s.tiktok_lower NOT IN (SELECT username_lower FROM permanent_blacklist)`
+        ).bind(target.id, sid)
+      ]);
+      return json({ ok: true, entries: ent.meta.changes, disqualified: dq.meta.changes });
+    }
+
+    case 'delete_saved': {
+      const sid = Number(body.id);
+      if (!Number.isInteger(sid)) return json({ ok: false, error: 'Invalid session.' }, 400);
+      const src = await env.DB.prepare("SELECT id FROM giveaways WHERE id = ?1 AND status = 'saved'").bind(sid).first();
+      if (!src) return json({ ok: false, error: 'That saved session no longer exists.' }, 404);
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM manual_applications WHERE giveaway_id = ?1').bind(sid),
+        env.DB.prepare('DELETE FROM qualified_entries WHERE giveaway_id = ?1').bind(sid),
+        env.DB.prepare('DELETE FROM disqualified_entries WHERE giveaway_id = ?1').bind(sid),
+        env.DB.prepare("DELETE FROM giveaways WHERE id = ?1 AND status = 'saved'").bind(sid)
       ]);
       return json({ ok: true });
     }
